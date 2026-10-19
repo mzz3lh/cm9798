@@ -129,7 +129,9 @@ td.rating { font-weight: 600; }
 .analysis { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
 .analysis h3 { font: 600 13px var(--font-body); margin: 0 0 6px; }
 .analysis .two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
-.analysis td { padding: 3px 4px; font-size: 13px; }
+.analysis td { padding: 3px 4px; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.analysis .two table { width: 100%; table-layout: fixed; }
+.analysis .two td:first-child { width: 36px; } .analysis .two td:nth-child(3) { width: 16px; padding: 3px 0; } .analysis .two td:last-child { width: 34px; text-align: right; }
 .notes { margin: 0; padding-left: 18px; display: grid; gap: 6px; }
 .inline-note { text-transform: none; letter-spacing: 0; font-weight: 400; }
 .pitch {
@@ -140,7 +142,7 @@ td.rating { font-weight: 600; }
 .pitch::before { content: ""; position: absolute; left: 30%; right: 30%; bottom: 0; height: 12%; border: 2px solid #3f7a57; border-bottom: 0; }
 .pitch::after { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 0; border-top: 2px solid #3f7a57; }
 .prow { position: relative; }
-.dot { position: absolute; top: 50%; transform: translate(-50%, -50%); display: grid; justify-items: center; gap: 2px; font-size: 11px; color: #fff; text-align: center; width: 76px; }
+.dot { background: none; border: 0; padding: 0; cursor: pointer; font-family: inherit; position: absolute; top: 50%; transform: translate(-50%, -50%); display: grid; justify-items: center; gap: 2px; font-size: 11px; color: #fff; text-align: center; width: 76px; }
 .dot i { width: 14px; height: 14px; border-radius: 50%; background: var(--accent); border: 2px solid #fff; }
 .dot.incoming i { background: var(--good); }
 .dot span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 76px; text-shadow: 0 1px 2px #000; }
@@ -154,6 +156,13 @@ td.rating { font-weight: 600; }
 #sheet td.warn { color: #f3dc7a; }
 #sheet tr.subbing td { background: color-mix(in srgb, var(--good) 10%, transparent); }
 #sheet-notes p { margin: 8px 0 0; }
+.dot.picked i { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 60%, transparent); }
+#sheet button.pick { background: none; border: 1px solid transparent; border-radius: 4px; color: inherit; font: inherit; padding: 3px 6px; margin-left: -6px; cursor: pointer; text-align: left; }
+#sheet button.pick:hover { border-color: var(--line); }
+#sheet button.pick.picked { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, transparent); }
+#sheet .on { color: var(--good); font-size: 12px; }
+#sheet tbody.bench tr:first-child td { border-top: 2px solid var(--line); }
+#sheet .hint { margin: 0 0 8px; }
 </style>
 
 <div class="wrap">

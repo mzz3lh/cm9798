@@ -55,7 +55,8 @@ function planFromSetup(team: Team, tactic: Tactic): Plan {
     team,
     tactic: { ...tactic },
     rows: lu.starters.map((player, i) => ({ player, slot: slots[i], run: 'normal' })),
-    bench: team.squad.filter(p => !lu.starters.includes(p)),
+    // The first nine are the substitutes, the rest are reserves.
+    bench: [...lu.bench, ...team.squad.filter(p => !lu.starters.includes(p) && !lu.bench.includes(p))],
   };
 }
 
@@ -101,83 +102,127 @@ function renderInstructions() {
   bind('i-offside', el => { plan.tactic.offsideTrap = el.checked; });
 }
 
+/**
+ * Click one player, then another, to swap them, as in the original. Two
+ * players in the team swap places; a team player and a substitute swap in
+ * the squad before kick-off, or make a substitution during the match.
+ */
+type Pick = { row: number } | { bench: string };
+let picked: Pick | undefined;
+const BENCH_SIZE = 9;
+
+function isPicked(p: Pick) {
+  return !!picked && JSON.stringify(picked) === JSON.stringify(p);
+}
+
+function handlePick(p: Pick) {
+  const first = picked;
+  if (!first || isPicked(p)) {
+    picked = first ? undefined : p;
+    renderSheet();
+    return;
+  }
+  picked = undefined;
+  if ('row' in first && 'row' in p) {
+    // Swap who plays where; the position and its runs stay with the slot.
+    const a = plan.rows[first.row], b = plan.rows[p.row];
+    [a.player, b.player] = [b.player, a.player];
+    [a.replaceWith, b.replaceWith] = [b.replaceWith, a.replaceWith];
+  } else if ('bench' in first && 'bench' in p) {
+    if (mode === 'setup') {
+      // Reorder the bench, so a reserve can become a substitute.
+      const i = plan.bench.findIndex(x => x.id === first.bench), j = plan.bench.findIndex(x => x.id === p.bench);
+      [plan.bench[i], plan.bench[j]] = [plan.bench[j], plan.bench[i]];
+    } else {
+      picked = p;
+    }
+  } else {
+    const row = plan.rows['row' in first ? first.row : (p as { row: number }).row];
+    const benchId = 'bench' in first ? first.bench : (p as { bench: string }).bench;
+    if (mode === 'setup') {
+      const i = plan.bench.findIndex(x => x.id === benchId);
+      [row.player, plan.bench[i]] = [plan.bench[i], row.player];
+    } else if (row.replaceWith === benchId) {
+      row.replaceWith = undefined;
+    } else {
+      for (const r of plan.rows) if (r.replaceWith === benchId) r.replaceWith = undefined;
+      row.replaceWith = benchId;
+    }
+  }
+  renderSheet();
+}
+
 /** Pitch rows from the attack down, and the columns each position sits in. */
 const PITCH_ROWS: Position[][] = [['ST'], ['AML', 'AMC', 'AMR'], ['ML', 'MC', 'MR'], ['DM'], ['DL', 'DC', 'DR'], ['GK']];
 const COLUMN: Record<Position, number> = {
   GK: 2, DL: 0, DC: 2, DR: 4, DM: 2, ML: 0, MC: 2, MR: 4, AML: 0, AMC: 2, AMR: 4, ST: 2,
 };
 
+const benchName = (id: string) => plan.bench.find(b => b.id === id)?.shortName ?? '';
+
 function renderPitch() {
   const rowsHtml = PITCH_ROWS.map(rowSlots => {
-    const here = plan.rows.filter(r => rowSlots.includes(r.slot) && !r.replaceWith);
-    const subsIn = plan.rows.filter(r => rowSlots.includes(r.slot) && r.replaceWith);
-    const all = [...here.map(r => ({ name: r.player.shortName, slot: r.slot, run: r.run, sub: false })),
-      ...subsIn.map(r => ({ name: plan.bench.find(b => b.id === r.replaceWith)?.shortName ?? '', slot: r.slot, run: r.run, sub: true }))];
+    const here = plan.rows.map((r, i) => ({ r, i })).filter(({ r }) => rowSlots.includes(r.slot));
     // Spread players sharing a column so they don't sit on top of each other.
-    const byCol = new Map<number, typeof all>();
-    for (const p of all) {
-      const c = COLUMN[p.slot];
-      byCol.set(c, [...(byCol.get(c) ?? []), p]);
-    }
+    const byCol = new Map<number, typeof here>();
+    for (const x of here) byCol.set(COLUMN[x.r.slot], [...(byCol.get(COLUMN[x.r.slot]) ?? []), x]);
     const dots: string[] = [];
     for (const [col, ps] of byCol) {
-      ps.forEach((p, i) => {
-        const offset = (i - (ps.length - 1) / 2) * 1.6;
+      ps.forEach(({ r, i }, k) => {
+        const offset = (k - (ps.length - 1) / 2) * 1.6;
         const x = ((col + offset + 0.5) / 5) * 100;
-        const arrow = p.run === 'forward' ? '<span class="arrow up" aria-label="gets forward">&#9650;</span>'
-          : p.run === 'hold' ? '<span class="arrow down" aria-label="holds position">&#9632;</span>' : '';
-        dots.push(`<div class="dot${p.sub ? ' incoming' : ''}" style="left:${Math.max(8, Math.min(92, x))}%">${arrow}<i></i><span>${esc(p.name)}</span></div>`);
+        const arrow = r.run === 'forward' ? '<span class="arrow up" aria-label="gets forward">&#9650;</span>'
+          : r.run === 'hold' ? '<span class="arrow down" aria-label="holds position">&#9632;</span>' : '';
+        const name = r.replaceWith ? benchName(r.replaceWith) : r.player.shortName;
+        const cls = `dot${r.replaceWith ? ' incoming' : ''}${isPicked({ row: i }) ? ' picked' : ''}`;
+        dots.push(`<button type="button" class="${cls}" data-row="${i}" style="left:${Math.max(8, Math.min(92, x))}%">${arrow}<i></i><span>${esc(name)}</span></button>`);
       });
     }
     return `<div class="prow">${dots.join('')}</div>`;
   }).join('');
   $('pitch').innerHTML = rowsHtml;
+  for (const el of $('pitch').querySelectorAll<HTMLButtonElement>('.dot')) {
+    el.addEventListener('click', () => handlePick({ row: Number(el.dataset.row) }));
+  }
 }
 
 function renderTable() {
   const inMatch = mode === 'match' && match;
-  const head = `<tr><th>Pos</th><th>Player</th><th>Runs</th>${inMatch ? '<th class="num">Cond</th><th class="num">Rtg</th><th>Replace with</th>' : '<th>Swap with</th>'}</tr>`;
-  const taken = new Set(plan.rows.map(r => r.replaceWith).filter(Boolean));
+  const head = `<tr><th>Pos</th><th>Player</th><th>Runs</th>${inMatch ? '<th class="num">Cond</th><th class="num">Rtg</th>' : ''}</tr>`;
   const body = plan.rows.map((r, i) => {
     const posSel = `<select data-i="${i}" class="pos-sel" aria-label="Position for ${esc(r.player.name)}">${POSITIONS.map(p => opt(p, p, r.slot)).join('')}</select>`;
     const runSel = r.slot === 'GK' ? '<span class="muted">-</span>'
       : `<select data-i="${i}" class="run-sel" aria-label="Runs for ${esc(r.player.name)}">${(['hold', 'normal', 'forward'] as Run[]).map(x => opt(x, RUN_NAMES[x], r.run)).join('')}</select>`;
     const misplaced = !r.player.positions.includes(r.slot);
-    const nameCell = `<td class="${misplaced ? 'warn' : ''}" title="${misplaced ? 'Not his usual position: ' + r.player.positions.join(', ') : r.player.positions.join(', ')}">${esc(r.player.name)}<span class="muted small"> ${r.player.positions.join('/')}</span></td>`;
+    const coming = r.replaceWith ? `<span class="on"> &#8594; ${esc(benchName(r.replaceWith))}</span>` : '';
+    const nameCell = `<td class="${misplaced ? 'warn' : ''}" title="${misplaced ? 'Not his usual position: ' + r.player.positions.join(', ') : r.player.positions.join(', ')}"><button type="button" class="pick${isPicked({ row: i }) ? ' picked' : ''}" data-row="${i}">${esc(r.player.name)}<span class="muted small"> ${r.player.positions.join('/')}</span></button>${coming}</td>`;
     if (inMatch) {
       const o = match!.sides[mySide].pitch.find(x => x.player.id === r.player.id);
       const st = match!.playerStats.get(r.player.id)!;
-      const benchOpts = plan.bench.filter(b => b.id === r.replaceWith || !taken.has(b.id))
-        .map(b => opt(b.id, `${b.shortName} (${b.positions.join('/')})`, r.replaceWith ?? '')).join('');
       return `<tr${r.replaceWith ? ' class="subbing"' : ''}><td>${posSel}</td>${nameCell}<td>${runSel}</td>
-        <td class="num">${Math.round(o?.condition ?? 100)}%</td><td class="num">${Math.max(1, Math.min(10, st.rating)).toFixed(1)}</td>
-        <td><select data-i="${i}" class="rep-sel" aria-label="Replace ${esc(r.player.name)}"><option value="">-</option>${benchOpts}</select></td></tr>`;
+        <td class="num">${Math.round(o?.condition ?? 100)}%</td><td class="num">${Math.max(1, Math.min(10, st.rating)).toFixed(1)}</td></tr>`;
     }
-    const swapOpts = plan.bench.map(b => opt(b.id, `${b.shortName} (${b.positions.join('/')})`, '')).join('');
-    return `<tr><td>${posSel}</td>${nameCell}<td>${runSel}</td>
-      <td><select data-i="${i}" class="swap-sel" aria-label="Swap ${esc(r.player.name)}"><option value="">-</option>${swapOpts}</select></td></tr>`;
+    return `<tr><td>${posSel}</td>${nameCell}<td>${runSel}</td></tr>`;
   }).join('');
-  $('sheet').innerHTML = `<table class="squad"><thead>${head}</thead><tbody>${body}</tbody></table>`;
 
+  const benchRow = (b: Player, i: number) => {
+    const forRow = plan.rows.find(r => r.replaceWith === b.id);
+    const note = forRow ? `<span class="on">on for ${esc(forRow.player.shortName)}</span>` : '';
+    const label = mode === 'setup' ? (i < BENCH_SIZE ? 'SUB' : 'RES') : 'SUB';
+    return `<tr${forRow ? ' class="subbing"' : ''}><td class="muted small">${label}</td><td colspan="${inMatch ? 4 : 2}"><button type="button" class="pick${isPicked({ bench: b.id }) ? ' picked' : ''}" data-bench="${esc(b.id)}">${esc(b.name)}<span class="muted small"> ${b.positions.join('/')}</span></button> ${note}</td></tr>`;
+  };
+  const benchHtml = plan.bench.map(benchRow).join('');
+  $('sheet').innerHTML = `<p class="muted small hint">Click a player, then another, to swap them.${mode === 'setup' ? ' Swap a reserve with a substitute to change the bench.' : ' Click a player and a substitute to bring him on.'}</p>
+    <table class="squad"><thead>${head}</thead><tbody>${body}</tbody><tbody class="bench">${benchHtml}</tbody></table>`;
+
+  for (const el of $('sheet').querySelectorAll<HTMLButtonElement>('button.pick')) {
+    el.addEventListener('click', () => handlePick(el.dataset.bench ? { bench: el.dataset.bench } : { row: Number(el.dataset.row) }));
+  }
   for (const el of $('sheet').querySelectorAll<HTMLSelectElement>('.pos-sel')) {
     el.addEventListener('change', () => { plan.rows[Number(el.dataset.i)].slot = el.value as Position; renderSheet(); });
   }
   for (const el of $('sheet').querySelectorAll<HTMLSelectElement>('.run-sel')) {
     el.addEventListener('change', () => { plan.rows[Number(el.dataset.i)].run = el.value as Run; renderPitch(); });
-  }
-  for (const el of $('sheet').querySelectorAll<HTMLSelectElement>('.rep-sel')) {
-    el.addEventListener('change', () => { plan.rows[Number(el.dataset.i)].replaceWith = el.value || undefined; renderSheet(); });
-  }
-  for (const el of $('sheet').querySelectorAll<HTMLSelectElement>('.swap-sel')) {
-    el.addEventListener('change', () => {
-      const row = plan.rows[Number(el.dataset.i)];
-      const incoming = plan.bench.find(b => b.id === el.value);
-      if (!incoming) return;
-      plan.bench = [...plan.bench.filter(b => b !== incoming), row.player];
-      row.player = incoming;
-      row.run = 'normal';
-      renderSheet();
-    });
   }
 
   const keepers = plan.rows.filter(r => r.slot === 'GK').length;
@@ -232,6 +277,7 @@ function renderSetup() {
 
 /** Shows the tactics screen, used before kick-off, when paused and at half time. */
 function showManage(title: string, subtitle: string) {
+  picked = undefined;
   $('manage-title').textContent = title;
   $('manage-sub').textContent = subtitle;
   $('manage-error').textContent = '';
@@ -258,9 +304,7 @@ function kickOff() {
   mySide = home ? 0 : 1;
   const runs: Record<string, Run> = {};
   for (const r of plan.rows) runs[r.player.id] = r.run;
-  const benchSorted = [...plan.bench].sort((a, b) => b.ability - a.ability);
-  const keeper = benchSorted.find(p => p.positions[0] === 'GK');
-  const bench = [...(keeper ? [keeper] : []), ...benchSorted.filter(p => p !== keeper)].slice(0, 9);
+  const bench = plan.bench.slice(0, BENCH_SIZE);
   const mine = {
     team: plan.team,
     lineup: { starters: plan.rows.map(r => r.player), bench, slots: plan.rows.map(r => r.slot), runs },
