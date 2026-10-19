@@ -92,10 +92,18 @@ export interface Tactic {
 export type FormationName =
   | '4-4-2' | '4-3-3' | '4-2-3-1' | '3-5-2' | '5-3-2' | '4-5-1' | '4-1-4-1' | '3-4-3' | '4-4-2 Diamond';
 
+/** The runs a player makes, shown as arrows on the original's tactics pitch. */
+export type Run = 'hold' | 'normal' | 'forward';
+export const RUN_NAMES: Record<Run, string> = { hold: 'Hold position', normal: 'Normal', forward: 'Get forward' };
+
 export interface Lineup {
   /** Eleven players, matched one to one with the formation's slots. */
   starters: Player[];
   bench: Player[];
+  /** Optional per-player positions that override the formation's slots. */
+  slots?: Position[];
+  /** Optional runs per player id; anyone missing plays 'normal'. */
+  runs?: Record<string, Run>;
 }
 
 export type MatchEventType =

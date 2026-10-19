@@ -1,4 +1,4 @@
-import type { FormationName, Line, Position } from './types';
+import type { FormationName, Line, Position, Run } from './types';
 
 /** Each formation is eleven slots, goalkeeper first. */
 export const FORMATIONS: Record<FormationName, Position[]> = {
@@ -57,4 +57,15 @@ export function familiarity(positions: Position[], slot: Position): number {
   const order: Line[] = ['DEF', 'MID', 'ATT'];
   const near = positions.some(p => Math.abs(order.indexOf(lineOf(p)) - order.indexOf(line)) === 1);
   return near ? 0.7 : 0.5;
+}
+
+/**
+ * Slot weights adjusted for a player's runs: getting forward adds to attack
+ * and leaves a gap behind; holding position does the opposite.
+ */
+export function slotWeights(slot: Position, run: Run): [number, number, number] {
+  const [d, m, a] = SLOT_WEIGHTS[slot];
+  if (slot === 'GK' || run === 'normal') return [d, m, a];
+  if (run === 'forward') return [d * 0.65, m, Math.min(1.1, a + 0.3)];
+  return [Math.min(1.1, d + 0.25), m, a * 0.5];
 }

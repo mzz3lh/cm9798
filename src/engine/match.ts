@@ -4,12 +4,12 @@
 // so a whole match takes a few milliseconds and can be replayed from its seed.
 
 import { Rng } from './rng';
-import { FORMATIONS, SLOT_WEIGHTS, familiarity, isWide, lineOf } from './formations';
+import { FORMATIONS, familiarity, isWide, lineOf, slotWeights } from './formations';
 import { lines } from './commentary';
 import {
   MENTALITY_NAMES,
   type Attribute, type Lineup, type MatchEvent, type MatchEventType, type Mentality,
-  type Player, type PlayerMatchStats, type Position, type Tactic, type Team, type TeamMatchStats,
+  type Player, type PlayerMatchStats, type Position, type Run, type Tactic, type Team, type TeamMatchStats,
 } from './types';
 
 export interface MatchSide {
@@ -30,9 +30,10 @@ export interface MatchOptions {
   commentary?: boolean;
 }
 
-interface OnPitch {
+export interface OnPitch {
   player: Player;
   slot: Position;
+  run: Run;
   condition: number;
   form: number;
   yellow: number;
@@ -88,7 +89,7 @@ export class Match {
   }
 
   private initSide(setup: MatchSide, side: 0 | 1): SideState {
-    const slots = FORMATIONS[setup.tactic.formation];
+    const slots = setup.lineup.slots ?? FORMATIONS[setup.tactic.formation];
     const imp = this.options.importance;
     const pitch: OnPitch[] = setup.lineup.starters.map((player, i) => {
       // Consistency sets how far a player strays from his ability today;
@@ -97,7 +98,7 @@ export class Match {
       const big = ((player.attributes.bigOccasion - 10) / 200) * imp;
       const form = clamp(this.rng.normal(1, spread * 0.6) + big, 0.8, 1.15);
       this.registerPlayer(player, side);
-      return { player, slot: slots[i], condition: 100, form, yellow: 0, treatment: 0 };
+      return { player, slot: slots[i], run: setup.lineup.runs?.[player.id] ?? 'normal', condition: 100, form, yellow: 0, treatment: 0 };
     });
     return {
       setup,
@@ -138,6 +139,11 @@ export class Match {
     return base * (1 + 0.35 * rel) * fam * cond * o.form;
   }
 
+  /** Phase weights for a player in his slot, allowing for his runs. */
+  private w(o: OnPitch): [number, number, number] {
+    return slotWeights(o.slot, o.run);
+  }
+
   private active(s: SideState): OnPitch[] {
     return s.pitch.filter(o => o.treatment === 0);
   }
@@ -163,7 +169,7 @@ export class Match {
     ];
     let total = 0;
     for (const o of this.outfield(s)) {
-      const w = SLOT_WEIGHTS[o.slot][which];
+      const w = this.w(o)[which];
       if (w === 0) continue;
       total += w * mean(attrs[which].map(a => this.eff(o, a)));
     }
@@ -230,6 +236,23 @@ export class Match {
     }
   }
 
+  /** Moves a player to a new position on the pitch. */
+  setPosition(side: 0 | 1, playerId: string, slot: Position) {
+    const o = this.sides[side].pitch.find(x => x.player.id === playerId);
+    if (!o || o.slot === slot) return;
+    const from = o.slot;
+    o.slot = slot;
+    if (this.started && !this.finished) {
+      this.say('tactic', `${this.teamName(side)} reshuffle: ${o.player.shortName} moves from ${from} to ${slot}.`, 0, side);
+    }
+  }
+
+  /** Changes the runs a player makes. */
+  setRun(side: 0 | 1, playerId: string, run: Run) {
+    const o = this.sides[side].pitch.find(x => x.player.id === playerId);
+    if (o) o.run = run;
+  }
+
   /** Returns an error message, or undefined if the substitution was made. */
   substitute(side: 0 | 1, offId: string, onId: string): string | undefined {
     const s = this.sides[side];
@@ -241,7 +264,7 @@ export class Match {
     const on = s.bench.find(p => p.id === onId);
     if (idx < 0 || !on) return 'Player not found.';
     const off = s.pitch[idx];
-    s.pitch[idx] = { player: on, slot: off.slot, condition: 100, form: clamp(this.rng.normal(1, 0.06), 0.85, 1.12), yellow: 0, treatment: 0 };
+    s.pitch[idx] = { player: on, slot: off.slot, run: 'normal', condition: 100, form: clamp(this.rng.normal(1, 0.06), 0.85, 1.12), yellow: 0, treatment: 0 };
     s.bench = s.bench.filter(p => p.id !== onId);
     s.used.add(on.id);
     this.registerPlayer(on, side);
@@ -334,7 +357,7 @@ export class Match {
       const t = s.setup.tactic;
       const pressDrain = t.pressing === 'high' ? 1.2 : t.pressing === 'low' ? 0.85 : 1;
       for (const o of s.pitch) {
-        const drain = 0.33 * (1 + (10 - o.player.attributes.stamina) / 20) * pressDrain * (1 + 0.06 * t.mentality);
+        const drain = 0.33 * (1 + (10 - o.player.attributes.stamina) / 20) * pressDrain * (1 + 0.06 * t.mentality) * (o.run === 'forward' ? 1.12 : o.run === 'hold' ? 0.92 : 1);
         o.condition = Math.max(20, o.condition - drain);
         if (o.treatment > 0) o.treatment--;
         this.ps(o.player).minutes++;
@@ -384,7 +407,7 @@ export class Match {
   private pickShooter(side: 0 | 1, kind: 'open' | 'header' | 'long' | 'setpiece'): OnPitch {
     const pool = this.outfield(this.sides[side]);
     return this.rng.weighted(pool, o => {
-      const att = SLOT_WEIGHTS[o.slot][2] + 0.05;
+      const att = this.w(o)[2] + 0.05;
       const t = o.player.tendencies;
       if (kind === 'header') return att * (o.player.attributes.heading / 10) ** 2 * (t.attacksCrosses / 10) ** 1.5;
       if (kind === 'setpiece') return (lineOf(o.slot) === 'DEF' ? 0.8 : att) * (o.player.attributes.heading / 10) ** 3 * (t.attacksCrosses / 10) ** 1.5;
@@ -396,7 +419,7 @@ export class Match {
   private pickCreator(side: 0 | 1, exclude: OnPitch, wide: boolean): OnPitch {
     const pool = this.outfield(this.sides[side]).filter(o => o !== exclude);
     return this.rng.weighted(pool, o => {
-      const mid = SLOT_WEIGHTS[o.slot][1] + SLOT_WEIGHTS[o.slot][2] * 0.6;
+      const mid = this.w(o)[1] + this.w(o)[2] * 0.6;
       const wideBonus = wide ? (isWide(o.slot) ? 2.5 : 0.4) : 1;
       return mid * wideBonus * (o.player.attributes.creativity / 10) * (o.player.tendencies.triesKillerPasses / 10 + 0.5);
     });
@@ -404,7 +427,7 @@ export class Match {
 
   private pickDefender(side: 0 | 1): OnPitch {
     const pool = this.outfield(this.sides[side]);
-    return this.rng.weighted(pool, o => SLOT_WEIGHTS[o.slot][0] ** 2 * (o.player.attributes.tackling / 10));
+    return this.rng.weighted(pool, o => this.w(o)[0] ** 2 * (o.player.attributes.tackling / 10));
   }
 
   private attack(side: 0 | 1) {
@@ -610,7 +633,7 @@ export class Match {
   private penalty(side: 0 | 1) {
     const s = this.sides[side];
     const taker = this.rng.weighted(this.outfield(s), o =>
-      (o.player.attributes.setPieces / 10) ** 3 * (o.player.attributes.composure / 10) ** 2 * (SLOT_WEIGHTS[o.slot][2] + 0.3));
+      (o.player.attributes.setPieces / 10) ** 3 * (o.player.attributes.composure / 10) ** 2 * (this.w(o)[2] + 0.3));
     this.say('penalty', lines.penaltyTaken(this.rng, { player: taker.player.shortName }), 1, side);
     this.shoot(side, taker, undefined, 0.78, 'pen');
   }
@@ -625,7 +648,7 @@ export class Match {
       const defending = this.lastPossession !== side ? 1.2 : 0.8;
       if (this.rng.chance(0.118 * press * defending)) {
         const fouler = this.rng.weighted(this.outfield(s), o =>
-          (o.player.attributes.aggression + o.player.attributes.dirtiness + o.player.tendencies.divesIntoTackles) / 30 * (SLOT_WEIGHTS[o.slot][0] + 0.4));
+          (o.player.attributes.aggression + o.player.attributes.dirtiness + o.player.tendencies.divesIntoTackles) / 30 * (this.w(o)[0] + 0.4));
         const victim = this.rng.pick(this.outfield(this.sides[1 - side]));
         s.stats.fouls++;
         const dirty = fouler.player.attributes.dirtiness / 10;
@@ -692,10 +715,10 @@ export class Match {
     if (o.slot === 'GK') {
       // Sacrifice an outfield player for the reserve keeper if possible, else an outfielder goes in goal.
       const reserve = s.bench.find(p => p.positions[0] === 'GK');
-      const victim = this.outfield(s).sort((a, b) => SLOT_WEIGHTS[b.slot][2] - SLOT_WEIGHTS[a.slot][2])[0];
+      const victim = this.outfield(s).sort((a, b) => this.w(b)[2] - this.w(a)[2])[0];
       if (reserve && victim && s.subsMade < SUB_LIMIT) {
         const idx = s.pitch.indexOf(victim);
-        s.pitch[idx] = { player: reserve, slot: 'GK', condition: 100, form: 1, yellow: 0, treatment: 0 };
+        s.pitch[idx] = { player: reserve, slot: 'GK', run: 'normal', condition: 100, form: 1, yellow: 0, treatment: 0 };
         s.bench = s.bench.filter(p => p !== reserve);
         this.registerPlayer(reserve, side);
         s.subsMade++;

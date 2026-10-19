@@ -117,6 +117,43 @@ tr.motm td { color: var(--accent); }
 td.rating { font-weight: 600; }
 .ft-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
 .foot { font-size: 12px; color: var(--muted); max-width: 70ch; }
+
+/* Tactics screen */
+.manage-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: end; gap: 12px; }
+.manage-head p { margin: 4px 0 0; }
+.actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+#manage-error { color: var(--bad); margin: 0; min-height: 0; }
+#manage-error:empty { display: none; }
+.manage-grid { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.4fr); gap: 16px; }
+@media (max-width: 900px) { .manage-grid { grid-template-columns: 1fr; } }
+.analysis { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+.analysis h3 { font: 600 13px var(--font-body); margin: 0 0 6px; }
+.analysis .two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+.analysis td { padding: 3px 4px; font-size: 13px; }
+.notes { margin: 0; padding-left: 18px; display: grid; gap: 6px; }
+.inline-note { text-transform: none; letter-spacing: 0; font-weight: 400; }
+.pitch {
+  position: relative; display: grid; grid-template-rows: repeat(6, 1fr); aspect-ratio: 68 / 80; max-width: 100%;
+  background: repeating-linear-gradient(180deg, #17402b 0 13.33%, #1a4830 13.33% 26.66%);
+  border: 2px solid #3f7a57; border-radius: 4px; overflow: hidden;
+}
+.pitch::before { content: ""; position: absolute; left: 30%; right: 30%; bottom: 0; height: 12%; border: 2px solid #3f7a57; border-bottom: 0; }
+.pitch::after { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 0; border-top: 2px solid #3f7a57; }
+.prow { position: relative; }
+.dot { position: absolute; top: 50%; transform: translate(-50%, -50%); display: grid; justify-items: center; gap: 2px; font-size: 11px; color: #fff; text-align: center; width: 76px; }
+.dot i { width: 14px; height: 14px; border-radius: 50%; background: var(--accent); border: 2px solid #fff; }
+.dot.incoming i { background: var(--good); }
+.dot span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 76px; text-shadow: 0 1px 2px #000; }
+.arrow { font-size: 10px; line-height: 1; }
+.arrow.up { color: var(--good); }
+.arrow.down { color: #9ec1ff; }
+.dot .arrow { position: absolute; top: -12px; }
+.legend { margin: 8px 0 0; }
+#sheet select { padding: 4px 6px; font-size: 13px; }
+#sheet td { white-space: nowrap; }
+#sheet td.warn { color: #f3dc7a; }
+#sheet tr.subbing td { background: color-mix(in srgb, var(--good) 10%, transparent); }
+#sheet-notes p { margin: 8px 0 0; }
 </style>
 
 <div class="wrap">
@@ -124,20 +161,6 @@ td.rating { font-weight: 600; }
     <h1>Championship Manager 97/98, modernised</h1>
     <p class="muted small">Phase 1: the text match engine</p>
   </header>
-
-  <section id="setup" class="setup-grid">
-    <div class="panel">
-      <h2>Match</h2>
-      <div id="setup-teams" class="grid-controls"></div>
-      <h2 style="margin-top:18px">Your tactics</h2>
-      <div id="setup-tactic" class="grid-controls"></div>
-      <div class="controls-row"><button id="kickoff" class="primary">Kick off</button></div>
-    </div>
-    <div class="panel">
-      <h2>Starting eleven</h2>
-      <div id="setup-squad" style="overflow-x:auto"></div>
-    </div>
-  </section>
 
   <section id="game" hidden>
     <div class="wrap">
@@ -147,22 +170,20 @@ td.rating { font-weight: 600; }
         <div class="team" id="away-name"></div>
       </div>
 
-      <div class="match-grid">
+      <div id="match-grid" class="match-grid">
         <div class="panel">
           <div id="commentary" aria-live="polite"></div>
           <div class="controls-row">
-            <button id="pause">Pause</button>
+            <button id="pause" class="primary">Pause and make changes</button>
             <label>Speed<select id="live-speed"><option value="slow">Slow</option><option value="normal">Normal</option><option value="fast">Fast</option><option value="instant">Instant result</option></select></label>
+            <span class="muted small">Space bar pauses</span>
           </div>
         </div>
         <div class="side-col">
           <div class="panel"><h2>Match stats</h2><div id="stats"></div></div>
           <div class="panel">
-            <h2>Your team <span id="subs-left" class="muted" style="text-transform:none;letter-spacing:0;font-weight:400"></span></h2>
+            <h2>Your team <span id="subs-left" class="muted inline-note"></span></h2>
             <ul id="my-xi"></ul>
-          </div>
-          <div class="panel">
-            <details><summary>Change tactics</summary><div id="in-tactic" class="grid-controls"></div></details>
           </div>
         </div>
       </div>
@@ -179,14 +200,28 @@ td.rating { font-weight: 600; }
     </div>
   </section>
 
+  <section id="manage" class="wrap">
+    <div class="manage-head">
+      <div><h2 class="ft" id="manage-title">Team selection</h2><p id="manage-sub" class="muted"></p></div>
+      <div class="actions">
+        <button id="kickoff" class="primary">Kick off</button>
+        <label id="manage-speed-wrap" hidden>Speed<select id="manage-speed"><option value="slow">Slow</option><option value="normal">Normal</option><option value="fast">Fast</option><option value="instant">Instant result</option></select></label>
+        <button id="resume" class="primary" hidden>Resume</button>
+      </div>
+    </div>
+    <p id="manage-error" role="alert"></p>
+    <div id="setup-teams" class="panel grid-controls"></div>
+    <div id="analysis" class="analysis" hidden></div>
+    <div class="manage-grid">
+      <div class="side-col">
+        <div class="panel"><h2>Shape and runs</h2><div id="pitch" class="pitch" aria-label="Your players on the pitch"></div>
+          <p class="muted small legend"><span class="arrow up">&#9650;</span> gets forward &nbsp; <span class="arrow down">&#9632;</span> holds position</p></div>
+        <div class="panel"><h2>Team instructions</h2><div id="instructions" class="grid-controls"></div></div>
+      </div>
+      <div class="panel"><h2>Team sheet</h2><div id="sheet" style="overflow-x:auto"></div><div id="sheet-notes" class="muted small"></div></div>
+    </div>
+  </section>
+
   <p class="foot">Squads are from the 2025/26 season with rough hand-set ratings; the data phase replaces them with 2026/27 squads converted from EA Sports FC and Opta-based stats. Attributes not set by hand are generated, as in the original. The engine uses the 2026/27 laws: five subs in three windows, VAR, semi-automated offside, the eight-second keeper rule and the one-minute treatment rule.</p>
 </div>
 
-<div id="sub-panel" hidden>
-  <div class="panel" role="dialog" aria-labelledby="sub-title">
-    <h2 id="sub-title"></h2>
-    <ul id="sub-list"></ul>
-    <p id="sub-error"></p>
-    <button id="sub-cancel">Cancel</button>
-  </div>
-</div>
