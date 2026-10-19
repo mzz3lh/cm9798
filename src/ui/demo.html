@@ -1,0 +1,192 @@
+<title>CM97/98 Match Engine</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;700&family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: a single match-day console. Setup card, then scoreboard over a
+   commentary column with stats and your XI beside it, like the CM2 match screen. */
+:root {
+  --bg: #0d1420;          /* stadium-night navy */
+  --panel: #152033;
+  --panel-2: #1b2940;
+  --line: #2a3a55;
+  --fg: #e6ecf5;
+  --muted: #8b9ab3;
+  --accent: #f2c14e;      /* floodlight amber, used for goals and key moments */
+  --good: #5cc98a;
+  --bad: #e5604f;
+  --font-display: "Barlow Condensed", "Arial Narrow", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { height: 100%; }
+body {
+  background: var(--bg); color: var(--fg); font: 15px/1.5 var(--font-body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 20px 32px;
+}
+.wrap { max-width: 1100px; margin: 0 auto; display: grid; gap: 16px; }
+h1 { font: 700 30px/1.1 var(--font-display); letter-spacing: 0.02em; margin: 0; text-transform: uppercase; }
+h2 { font: 600 13px/1.2 var(--font-body); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin: 0 0 10px; }
+.muted { color: var(--muted); }
+.small { font-size: 13px; }
+.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 16px; min-width: 0; }
+header.top { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 16px; }
+header.top p { margin: 0; }
+
+label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+label.check { display: flex; align-items: center; gap: 8px; text-transform: none; letter-spacing: 0; font-size: 14px; color: var(--fg); }
+select, button { font: 500 14px var(--font-body); color: var(--fg); background: var(--panel-2); border: 1px solid var(--line); border-radius: 4px; padding: 7px 10px; }
+select { width: 100%; }
+button { cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: 0.4; cursor: default; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.primary { background: var(--accent); color: #1a1405; border-color: var(--accent); font-weight: 600; padding: 10px 22px; }
+.grid-controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.setup-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+@media (max-width: 760px) { .setup-grid { grid-template-columns: 1fr; } }
+
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th { text-align: left; font-weight: 500; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; border-bottom: 1px solid var(--line); padding: 4px 6px; }
+td { padding: 5px 6px; border-bottom: 1px solid color-mix(in srgb, var(--line) 50%, transparent); }
+td.pos, .pos { font-family: var(--font-mono); font-size: 12px; color: var(--accent); width: 3.2em; }
+th.num, td.num { text-align: right; }
+
+/* Scoreboard */
+#scoreboard { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 12px; padding: 0; overflow: hidden; }
+#scoreboard .team { font: 700 26px/1.1 var(--font-display); text-transform: uppercase; padding: 14px 16px; overflow-wrap: anywhere; }
+#home-name { border-left: 8px solid var(--home); }
+#away-name { border-right: 8px solid var(--away); text-align: right; }
+#scoreboard .mid { text-align: center; padding: 10px 0; }
+#score { font: 700 44px/1 var(--font-display); letter-spacing: 0.04em; }
+#clock { font: 600 14px var(--font-mono); color: var(--accent); }
+#venue-line { font-size: 12px; color: var(--muted); }
+@media (max-width: 520px) { #scoreboard .team { font-size: 18px; padding: 10px; } #score { font-size: 34px; } }
+
+.match-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 16px; }
+@media (max-width: 860px) { .match-grid { grid-template-columns: 1fr; } }
+#commentary { height: 420px; overflow-y: auto; font-size: 15px; display: grid; align-content: start; gap: 2px; scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { #commentary { scroll-behavior: auto; } }
+.line { display: grid; grid-template-columns: 3.6em minmax(0, 1fr); gap: 8px; padding: 3px 8px; border-left: 3px solid transparent; }
+.line .min { font: 12px/1.9 var(--font-mono); color: var(--muted); }
+.line.sided { border-left-color: color-mix(in srgb, var(--team) 70%, transparent); }
+.line.imp0 .txt { color: color-mix(in srgb, var(--fg) 78%, var(--bg)); }
+.line.imp1 .txt { font-weight: 500; }
+.line.imp2 { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.line.imp2 .txt { font-weight: 600; color: var(--accent); }
+.line.red .txt, .line.disallowed .txt { color: var(--bad); }
+.line.yellow .txt { color: #f3dc7a; }
+.controls-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; margin-top: 12px; }
+.controls-row label { min-width: 150px; }
+
+.stat { display: grid; grid-template-columns: 3.5em 1fr 3.5em; align-items: center; font-size: 13px; margin-bottom: 8px; }
+.stat .label { text-align: center; color: var(--muted); }
+.stat .b { text-align: right; }
+.stat .track { grid-column: 1 / -1; height: 4px; background: var(--away, var(--line)); background: color-mix(in srgb, var(--fg) 18%, transparent); border-radius: 2px; overflow: hidden; }
+.stat .track i { display: block; height: 100%; background: var(--accent); }
+.side-col { display: grid; gap: 16px; align-content: start; min-width: 0; }
+
+#my-xi { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+#my-xi li { display: grid; grid-template-columns: 3em minmax(0, 1fr) 60px auto; gap: 8px; align-items: center; font-size: 14px; }
+#my-xi .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cond { height: 6px; background: color-mix(in srgb, var(--fg) 15%, transparent); border-radius: 3px; overflow: hidden; }
+.cond i { display: block; height: 100%; background: var(--good); }
+button.sub { padding: 2px 8px; font-size: 12px; }
+b.g { font-weight: 400; font-size: 11px; }
+b.yc { display: inline-block; width: 8px; height: 11px; background: #f3dc7a; border-radius: 1px; vertical-align: -1px; }
+details > summary { cursor: pointer; color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; }
+details[open] > summary { margin-bottom: 10px; }
+
+#sub-panel { position: fixed; inset: 0; background: color-mix(in srgb, var(--bg) 70%, transparent); display: grid; place-items: center; padding: 16px; z-index: 20; }
+#sub-panel .panel { width: min(420px, 100%); max-height: 80vh; overflow: auto; }
+#sub-list { list-style: none; padding: 0; margin: 0 0 12px; display: grid; gap: 6px; }
+#sub-list button { width: 100%; display: flex; justify-content: space-between; gap: 12px; text-align: left; }
+#sub-error { color: var(--bad); min-height: 1.2em; margin: 0 0 8px; font-size: 13px; }
+
+#fulltime h2.ft { font: 700 26px/1.1 var(--font-display); text-transform: uppercase; letter-spacing: 0.02em; color: var(--fg); margin: 0 0 4px; }
+#ft-motm { color: var(--accent); margin: 0 0 14px; font-weight: 500; }
+.ft-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+@media (max-width: 760px) { .ft-grid { grid-template-columns: 1fr; } }
+tr.motm td { color: var(--accent); }
+td.rating { font-weight: 600; }
+.ft-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+.foot { font-size: 12px; color: var(--muted); max-width: 70ch; }
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <h1>Championship Manager 97/98, modernised</h1>
+    <p class="muted small">Phase 1: the text match engine</p>
+  </header>
+
+  <section id="setup" class="setup-grid">
+    <div class="panel">
+      <h2>Match</h2>
+      <div id="setup-teams" class="grid-controls"></div>
+      <h2 style="margin-top:18px">Your tactics</h2>
+      <div id="setup-tactic" class="grid-controls"></div>
+      <div class="controls-row"><button id="kickoff" class="primary">Kick off</button></div>
+    </div>
+    <div class="panel">
+      <h2>Starting eleven</h2>
+      <div id="setup-squad" style="overflow-x:auto"></div>
+    </div>
+  </section>
+
+  <section id="game" hidden>
+    <div class="wrap">
+      <div id="scoreboard" class="panel">
+        <div class="team" id="home-name"></div>
+        <div class="mid"><div id="score" class="num">0 - 0</div><div id="clock">0'</div><div id="venue-line"></div></div>
+        <div class="team" id="away-name"></div>
+      </div>
+
+      <div class="match-grid">
+        <div class="panel">
+          <div id="commentary" aria-live="polite"></div>
+          <div class="controls-row">
+            <button id="pause">Pause</button>
+            <label>Speed<select id="live-speed"><option value="slow">Slow</option><option value="normal">Normal</option><option value="fast">Fast</option><option value="instant">Instant result</option></select></label>
+          </div>
+        </div>
+        <div class="side-col">
+          <div class="panel"><h2>Match stats</h2><div id="stats"></div></div>
+          <div class="panel">
+            <h2>Your team <span id="subs-left" class="muted" style="text-transform:none;letter-spacing:0;font-weight:400"></span></h2>
+            <ul id="my-xi"></ul>
+          </div>
+          <div class="panel">
+            <details><summary>Change tactics</summary><div id="in-tactic" class="grid-controls"></div></details>
+          </div>
+        </div>
+      </div>
+
+      <section id="fulltime" class="panel" hidden>
+        <h2 class="ft" id="ft-score"></h2>
+        <p id="ft-motm"></p>
+        <div class="ft-grid">
+          <div style="overflow-x:auto"><h2 id="ft-home-name"></h2><table><thead><tr><th>Player</th><th class="num">Mins</th><th>Notes</th><th class="num">Rating</th></tr></thead><tbody id="ft-home"></tbody></table></div>
+          <div style="overflow-x:auto"><h2 id="ft-away-name"></h2><table><thead><tr><th>Player</th><th class="num">Mins</th><th>Notes</th><th class="num">Rating</th></tr></thead><tbody id="ft-away"></tbody></table></div>
+        </div>
+        <div class="ft-actions"><button id="rematch" class="primary">Play again</button><button id="again">Change teams</button></div>
+      </section>
+    </div>
+  </section>
+
+  <p class="foot">Squads are from the 2025/26 season with rough hand-set ratings; the data phase replaces them with 2026/27 squads converted from EA Sports FC and Opta-based stats. Attributes not set by hand are generated, as in the original. The engine uses the 2026/27 laws: five subs in three windows, VAR, semi-automated offside, the eight-second keeper rule and the one-minute treatment rule.</p>
+</div>
+
+<div id="sub-panel" hidden>
+  <div class="panel" role="dialog" aria-labelledby="sub-title">
+    <h2 id="sub-title"></h2>
+    <ul id="sub-list"></ul>
+    <p id="sub-error"></p>
+    <button id="sub-cancel">Cancel</button>
+  </div>
+</div>

@@ -1,0 +1,18 @@
+{
+  "name": "cm9798",
+  "version": "1.0.0",
+  "description": "A modern remake of Championship Manager 97/98",
+  "scripts": {
+    "typecheck": "tsc -p .",
+    "balance": "tsx scripts/balance.ts 5",
+    "tactics": "tsx scripts/tactics.ts",
+    "build:demo": "node scripts/build-demo.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  },
+  "private": true
+}
