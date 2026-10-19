@@ -522,9 +522,17 @@ function boot() {
     showManage('Team selection', 'Set your positions, runs and instructions, then kick off.');
     $('game').hidden = true;
   });
+  // Space switches between normal and fast; Return pauses.
   document.addEventListener('keydown', e => {
-    if (e.key === ' ' && mode === 'match' && !paused && match && !match.finished
-      && !(e.target instanceof HTMLSelectElement || e.target instanceof HTMLButtonElement || e.target instanceof HTMLInputElement)) {
+    if (mode !== 'match' || !match || match.finished) return;
+    if (e.target instanceof HTMLSelectElement || e.target instanceof HTMLInputElement) return;
+    if (e.key === ' ') {
+      e.preventDefault();
+      const live = $<HTMLSelectElement>('live-speed');
+      live.value = live.value === 'fast' ? 'normal' : 'fast';
+      $<HTMLSelectElement>('manage-speed').value = live.value;
+      if (!paused) tick();
+    } else if (e.key === 'Enter' && !paused) {
       e.preventDefault();
       pause('Paused', 'Look at the stats and make as many changes as you like, then resume.');
     }
