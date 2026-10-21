@@ -598,8 +598,13 @@ function drawTactics(s: Screen, readOnly = false) {
   const { bg, fg } = teamBar(plan.team);
   s.background();
   s.titleBar(plan.team.name, bg, fg, 8, 318);
-  const cyc = (labelText: string, x: number, w: number, onPrev: () => void, onNext: () => void) =>
-    s.button(labelText, x, 66, w, 30, act(onNext), { arrows: true, onRightClick: act(onPrev), colour: C.text });
+  const cyc = (labelText: string, x: number, w: number, onPrev: () => void, onNext: () => void) => {
+    // The left half steps back (the ‹ arrow), the right half forward; right-click also steps back.
+    s.button(labelText, x, 66, w, 30, undefined, { arrows: true, colour: C.text });
+    if (readOnly) return;
+    s.area(x, 66, w / 2, 30, { onClick: onPrev, onRightClick: onPrev });
+    s.area(x + w / 2, 66, w / 2, 30, { onClick: onNext, onRightClick: onPrev });
+  };
   cyc(`${formationLabel()}\nFormation`, 10, 104, () => setFormation(cycle(FORMATION_NAMES, t.formation, -1)), () => setFormation(cycle(FORMATION_NAMES, t.formation, 1)));
   const ments = [-2, -1, 0, 1, 2] as Mentality[];
   cyc(`${MENTALITY_NAMES[t.mentality]}\nMentality`, 116, 104, () => { t.mentality = cycle(ments, t.mentality, -1); }, () => { t.mentality = cycle(ments, t.mentality, 1); });
