@@ -290,7 +290,9 @@ export class Screen {
     this.rect(x + 2, y + 2, w - 4, h - 4, opts.lit ? C.boxBlueLight : C.boxBlue);
     const font = opts.font ?? 'MY1';
     if (s) {
-      const ty = y + Math.round((h - lineHeight(font)) / 2);
+      // Centre the characters themselves, not the font's cell with its blank rows above.
+      const [lead, ascent] = GLYPH_ROWS[font];
+      const ty = y + Math.round((h - (ascent - lead)) / 2) - lead;
       if (opts.align === 'left') this.text(s, x + 6, ty, { font, colour: opts.colour ?? C.white });
       else this.text(s, x + w / 2, ty, { font, colour: opts.colour ?? C.white, align: 'center' });
     }
@@ -321,6 +323,11 @@ export function lineHeight(font: FontName): number {
   // Cell height less the font's internal leading, which is how tightly the original stacks lines.
   return { MY1: 11, MY2: 13, MY3: 16, MY4: 18, MY5: 24, MY6: 32, MY7: 32 }[font];
 }
+
+/** The rows of each font's cell that capitals and digits use: from below the internal leading to the baseline. */
+const GLYPH_ROWS: Record<FontName, [number, number]> = {
+  MY1: [2, 11], MY2: [3, 13], MY3: [4, 16], MY4: [6, 19], MY5: [5, 23], MY6: [0, 26], MY7: [0, 26],
+};
 
 function shade(hex: string, f: number) {
   const n = parseInt(hex.slice(1), 16);

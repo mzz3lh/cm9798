@@ -28,7 +28,8 @@ type View =
   | { kind: 'menu' }
   | { kind: 'squad'; team: 'mine' | 'theirs' }
   | { kind: 'profile'; player: Player; team: Team; back: View; tab: ProfileTab }
-  | { kind: 'tactics' }
+  /** `theirs` shows the other side's tactics, to look at but not change. */
+  | { kind: 'tactics'; theirs?: Plan }
   | { kind: 'confirm' }
   | { kind: 'match' }
   | { kind: 'info'; tab: InfoTab }
@@ -81,10 +82,10 @@ function newPlan(team: Team, tactic: Tactic): Plan {
   };
 }
 
-function planFromMatch(): Plan {
-  const s = match!.sides[mySide];
+function planFromMatch(side: 0 | 1 = mySide): Plan {
+  const s = match!.sides[side];
   const kept = s.pitch.map(o => {
-    const l = layout.get(o.player.id);
+    const l = side === mySide ? layout.get(o.player.id) : undefined;
     return l && positionOf(l.spot) === o.slot ? l : undefined;
   });
   const taken = new Set(kept.filter(Boolean).map(l => l!.spot));
@@ -297,17 +298,18 @@ function handlePick(p: { row: number } | { bench: string }) {
     const row = plan.rows['row' in first ? first.row : (p as { row: number }).row];
     const benchId = 'bench' in first ? first.bench : (p as { bench: string }).bench;
     const incoming = plan.bench.find(x => x.id === benchId)!;
-    // The player coming in goes where his profile says he plays, in the space the other leaves.
-    const taken = new Set(plan.rows.filter(r => r !== row).map(r => placeOf(r).spot));
-    const [spot] = spotsFor([incoming.positions[0]], taken);
     if (inMatch) {
       // In a match this lines up a substitution, made on resume; again to cancel.
+      // A substitute goes man-for-man: he takes the place and runs of the player he replaces.
       if (row.sub?.id === benchId) row.sub = undefined;
       else {
         for (const r of plan.rows) if (r.sub?.id === benchId) r.sub = undefined;
-        row.sub = { id: benchId, spot };
+        row.sub = { id: benchId, spot: row.spot, runTo: row.runTo };
       }
     } else {
+      // Before the match, a player brought into the team goes where his profile says he plays.
+      const taken = new Set(plan.rows.filter(r => r !== row).map(r => placeOf(r).spot));
+      const [spot] = spotsFor([incoming.positions[0]], taken);
       const i = plan.bench.indexOf(incoming);
       plan.bench[i] = row.player;
       row.player = incoming;
@@ -557,24 +559,28 @@ function formationLabel(): string {
   return shape === shapeOf(FORMATIONS[plan.tactic.formation]) ? plan.tactic.formation : shape;
 }
 
-function drawTactics(s: Screen) {
+function drawTactics(s: Screen, readOnly = false) {
   const t = plan.tactic;
+  const team = plan.team;
   const inMatch = !!match && !match.finished;
+  const side = match ? match.sides.findIndex(x => x.setup.team.id === team.id) : -1;
+  // Read-only: the buttons show the settings but do nothing.
+  const act = <T,>(f: T) => (readOnly ? undefined : f);
   const { bg, fg } = teamBar(plan.team);
   s.background();
   s.titleBar(plan.team.name, bg, fg, 8, 318);
   const cyc = (labelText: string, x: number, w: number, onPrev: () => void, onNext: () => void) =>
-    s.button(labelText, x, 66, w, 30, onNext, { arrows: true, onRightClick: onPrev });
+    s.button(labelText, x, 66, w, 30, act(onNext), { arrows: true, onRightClick: act(onPrev), colour: C.text });
   cyc(`${formationLabel()}\nFormation`, 10, 104, () => setFormation(cycle(FORMATION_NAMES, t.formation, -1)), () => setFormation(cycle(FORMATION_NAMES, t.formation, 1)));
   const ments = [-2, -1, 0, 1, 2] as Mentality[];
   cyc(`${MENTALITY_NAMES[t.mentality]}\nMentality`, 116, 104, () => { t.mentality = cycle(ments, t.mentality, -1); }, () => { t.mentality = cycle(ments, t.mentality, 1); });
   const passing = ['short', 'mixed', 'direct'] as const;
   cyc(`${cap(t.passing)}\nPassing`, 222, 104, () => { t.passing = cycle(passing, t.passing, -1); }, () => { t.passing = cycle(passing, t.passing, 1); });
   const press = ['low', 'mid', 'high'] as const, width = ['narrow', 'normal', 'wide'] as const;
-  s.button(`${cap(t.pressing)}\nPressing`, 10, 98, 79, 30, () => { t.pressing = cycle(press, t.pressing, 1); }, { onRightClick: () => { t.pressing = cycle(press, t.pressing, -1); } });
-  s.button(`${cap(t.width)}\nWidth`, 90, 98, 79, 30, () => { t.width = cycle(width, t.width, 1); }, { onRightClick: () => { t.width = cycle(width, t.width, -1); } });
-  s.button(`Counter\n${t.counterAttack ? 'On' : 'Off'}`, 170, 98, 79, 30, () => { t.counterAttack = !t.counterAttack; }, { active: t.counterAttack });
-  s.button(`Offside\n${t.offsideTrap ? 'Trap' : 'Off'}`, 250, 98, 76, 30, () => { t.offsideTrap = !t.offsideTrap; }, { active: t.offsideTrap });
+  s.button(`${cap(t.pressing)}\nPressing`, 10, 98, 79, 30, act(() => { t.pressing = cycle(press, t.pressing, 1); }), { onRightClick: act(() => { t.pressing = cycle(press, t.pressing, -1); }), colour: C.text });
+  s.button(`${cap(t.width)}\nWidth`, 90, 98, 79, 30, act(() => { t.width = cycle(width, t.width, 1); }), { onRightClick: act(() => { t.width = cycle(width, t.width, -1); }), colour: C.text });
+  s.button(`Counter\n${t.counterAttack ? 'On' : 'Off'}`, 170, 98, 79, 30, act(() => { t.counterAttack = !t.counterAttack; }), { active: t.counterAttack, colour: t.counterAttack ? C.yellow : C.text });
+  s.button(`Offside\n${t.offsideTrap ? 'Trap' : 'Off'}`, 250, 98, 76, 30, act(() => { t.offsideTrap = !t.offsideTrap; }), { active: t.offsideTrap, colour: t.offsideTrap ? C.yellow : C.text });
 
   // The numbered team list: 1-11 on the pitch, then the substitutes.
   s.panel(10, 132, 316, 308);
@@ -586,7 +592,7 @@ function drawTactics(s: Screen) {
     const y = 135 + i * 14;
     const pick = e.row !== undefined ? { row: e.row } : { bench: e.bench! };
     const lit = !!picked && JSON.stringify(picked) === JSON.stringify(pick);
-    s.blueBox(String(i + 1), 14, y, 26, 13, { lit, onClick: () => handlePick(pick) });
+    s.blueBox(String(i + 1), 14, y, 26, 13, { lit, onClick: act(() => handlePick(pick)) });
     const r = e.row !== undefined ? plan.rows[e.row] : undefined;
     const goingOn = e.bench ? plan.rows.find(x => x.sub?.id === e.bench) : undefined;
     const slot = r ? positionOf(r.spot) : undefined;
@@ -595,21 +601,22 @@ function drawTactics(s: Screen) {
     if (slot) s.text(slot, 206, y, { font: 'MY1', colour: C.gold });
     if (goingOn) s.text(positionOf(goingOn.sub!.spot), 206, y, { font: 'MY1', colour: C.yellow });
     if (inMatch && r) {
-      const cond = Math.round(match!.sides[mySide].pitch.find(o => o.player.id === r.player.id)?.condition ?? 100);
+      const cond = Math.round(match!.sides[side].pitch.find(o => o.player.id === r.player.id)?.condition ?? 100);
       s.text(`${cond}%`, 240, y + 1, { font: 'MY1', colour: cond < 70 ? C.orange : C.cyan });
     }
     if (r?.sub) s.text('off', 290, y + 1, { font: 'MY1', colour: C.orange });
     if (goingOn) s.text('on', 290, y + 1, { font: 'MY1', colour: C.yellow });
-    s.area(44, y, 240, 14, { onClick: () => openProfile(e.player, plan.team) });
+    s.area(44, y, 240, 14, { onClick: () => openProfile(e.player, team) });
   });
-  const problem = planProblem();
-  const hints = problem ? [problem] : [
+  const problem = readOnly ? undefined : planProblem();
+  const hints = readOnly ? ['The opposition\'s tactics, to look at only.', 'Click a name for his profile.'] : problem ? [problem] : [
     inMatch ? 'Click a number, then a substitute\'s, to bring him on.' : 'Click two numbers to swap players.',
     'Drag a player to move him. Right-drag to draw a run.',
   ];
   hints.forEach((h, i) => s.text(h, 168, 414 + i * 12, { font: 'MY1', colour: problem ? C.orange : C.text, align: 'center' }));
 
-  drawPitch(s);
+  drawPitch(s, readOnly);
+  if (readOnly) { s.doneBar('Done', () => { view = { kind: 'info', tab: 'ratings' }; }); return; }
   s.doneBar('Done', () => {
     if (planProblem()) return;
     picked = undefined;
@@ -646,7 +653,7 @@ function setFormation(f: FormationName) {
   plan.rows.forEach((r, i) => { const pl = placeOf(r); pl.spot = spots[i]; pl.runTo = undefined; });
 }
 
-function drawPitch(s: Screen) {
+function drawPitch(s: Screen, readOnly = false) {
   const { x, y, w, h } = PITCH;
   const g = s.ctx;
   s.rect(x - 2, y - 2, w + 4, h + 4, '#000');
@@ -694,6 +701,7 @@ function drawPitch(s: Screen) {
     s.text(String(i + 1), p.x, p.y - 13, { font: 'MY2', colour: lit ? C.cyan : C.yellow, align: 'center' });
     s.text(fit(name, 80, 'MY1'), p.x, p.y, { font: 'MY1', colour: row.sub ? C.yellow : lit ? C.cyan : C.text, align: 'center' });
     const bw = Math.max(30, Math.min(80, textWidth(name, 'MY1')) + 4);
+    if (readOnly) return;
     s.area(p.x - bw / 2, p.y - 13, bw, 25, {
       id: `row:${i}`,
       onClick: () => handlePick({ row: i }),
@@ -936,8 +944,9 @@ function drawInfo(s: Screen, tab: InfoTab) {
   ];
   tabs.forEach(([t, k], i) => s.button(t, 10 + i * 124, 414, 122, 30, () => { view = { kind: 'info', tab: k }; }, { active: k === tab }));
   const myTactics = () => { plan = planFromMatch(); undo = snapshot(); picked = undefined; view = { kind: 'tactics' }; };
+  const theirTactics = () => { picked = undefined; view = { kind: 'tactics', theirs: planFromMatch(mySide === 0 ? 1 : 0) }; };
   const tacticsButton = (side: 0 | 1, x: number) => s.button(`${m.sides[side].setup.team.shortName}\nTactics`, x, 446, 122, 30,
-    side === mySide && !m.finished ? myTactics : undefined);
+    side === mySide ? (m.finished ? undefined : myTactics) : theirTactics);
   tacticsButton(0, 10);
   tacticsButton(1, 508);
   s.doneBar('Done', () => {
@@ -1050,7 +1059,7 @@ function drawPlayerStats(s: Screen, side: 0 | 1) {
   sideList(side).forEach((p, i) => {
     const y = 110 + i * 14.5;
     const st = m.playerStats.get(p.id);
-    s.blueBox(String(i + 1), 24, Math.round(y), 26, 14, { font: 'MY1' });
+    s.blueBox(String(i + 1), 24, Math.round(y), 26, 13, { font: 'MY1' });
     const played = !!st && st.minutes > 0;
     s.text(fit(p.name, 170, 'MY1'), 58, Math.round(y), { font: 'MY1', colour: played ? C.text : '#8a8a8a' });
     s.area(58, Math.round(y), 170, 14, { onClick: () => openProfile(p, m.sides[side].setup.team) });
@@ -1058,7 +1067,7 @@ function drawPlayerStats(s: Screen, side: 0 | 1) {
     cols.forEach(([, f], c) => s.text(f(st), 256 + c * 38, Math.round(y), { font: 'MY1', colour: c === 2 && st.goals ? C.yellow : C.cyan, align: 'center' }));
     const cond = pitch.find(o => o.player.id === p.id)?.condition;
     if (cond !== undefined) s.text(String(Math.round(cond)), 560, Math.round(y), { font: 'MY1', colour: C.gold, align: 'center' });
-    s.blueBox(String(Math.max(1, Math.min(10, Math.round(st.rating)))), 582, Math.round(y), 32, 14, { font: 'MY1' });
+    s.blueBox(String(Math.max(1, Math.min(10, Math.round(st.rating)))), 582, Math.round(y), 32, 13, { font: 'MY1' });
   });
 }
 
@@ -1100,7 +1109,14 @@ screen.draw = s => {
     case 'menu': return drawMenu(s);
     case 'squad': return drawSquad(s, view.team);
     case 'profile': return drawProfile(s, view);
-    case 'tactics': return drawTactics(s);
+    case 'tactics': {
+      if (!view.theirs) return drawTactics(s);
+      // Draw the other side's team sheet with the same screen, read-only.
+      const mine = plan;
+      plan = view.theirs;
+      try { drawTactics(s, true); } finally { plan = mine; }
+      return;
+    }
     case 'confirm': return drawConfirm(s);
     case 'match': return drawMatch(s);
     case 'info': return drawInfo(s, view.tab);
