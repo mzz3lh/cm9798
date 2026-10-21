@@ -280,9 +280,11 @@ function drawSquad(s: Screen, which: 'mine' | 'theirs') {
   }
   s.panel(10, 100, 620, 312);
   const players = sortSquad(team.squad);
-  players.slice(0, 32).forEach((p, i) => {
-    const col = i < 16 ? 0 : 1;
-    const x = 12 + col * 296, y = 104 + (i % 16) * 19;
+  // Top to bottom, then the second column, split evenly between the two as the original did.
+  const shown = players.slice(0, 32), perColumn = Math.ceil(shown.length / 2);
+  shown.forEach((p, i) => {
+    const col = i < perColumn ? 0 : 1;
+    const x = 12 + col * 296, y = 104 + (i % perColumn) * 19;
     const n = numberOf.get(p.id);
     const isPicked = picked && (('row' in picked && plan.rows[picked.row]?.player.id === p.id) || ('bench' in picked && picked.bench === p.id));
     s.blueBox(n ? String(n) : '-', x, y, 34, 18, {
@@ -624,9 +626,12 @@ function drawTactics(s: Screen, readOnly = false) {
     const goingOn = e.bench ? plan.rows.find(x => x.sub?.id === e.bench) : undefined;
     const slot = r ? positionOf(r.spot) : undefined;
     const colour = i < 11 ? (slot && !r!.player.positions.includes(slot) ? C.gold : C.white) : '#9a9a9a';
-    s.text(fit(e.player.name, 138, 'MY2'), 46, y, { font: 'MY2', colour });
-    // Each player's positions from his profile, substitutes included, as on the squad screen.
-    s.text(fit(positionCode(e.player), 36, 'MY1'), 188, y + 1, { font: 'MY1', colour: goingOn ? C.yellow : C.gold });
+    // Each player's positions from his profile, substitutes included, as on the squad screen,
+    // shown in full and ending where the next column starts; the name gives way if needed.
+    const code = positionCode(e.player);
+    const codeLeft = 224 - textWidth(code, 'MY1');
+    s.text(fit(e.player.name, Math.min(138, codeLeft - 50), 'MY2'), 46, y, { font: 'MY2', colour });
+    s.text(code, codeLeft, y + 1, { font: 'MY1', colour: goingOn ? C.yellow : C.gold });
     if (r?.sub) s.text('off', 228, y + 1, { font: 'MY1', colour: C.orange });
     else if (goingOn) s.text('on', 228, y + 1, { font: 'MY1', colour: C.yellow });
     else if (inMatch && r) {
