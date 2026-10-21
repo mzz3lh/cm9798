@@ -9,7 +9,7 @@ import { lines } from './commentary';
 import {
   MENTALITY_NAMES,
   type Attribute, type Lineup, type MatchEvent, type MatchEventType, type Mentality,
-  type Player, type PlayerMatchStats, type Position, type Run, type Tactic, type Team, type TeamMatchStats,
+  type Player, type PlayerMatchStats, type Position, type Run, type Tactic, type Takers, type Team, type TeamMatchStats,
 } from './types';
 
 export interface MatchSide {
@@ -148,6 +148,12 @@ export class Match {
     return s.pitch.filter(o => o.treatment === 0);
   }
 
+  /** The player picked to take a set piece, if he is on the pitch and fit to. */
+  private taker(s: SideState, role: keyof Takers): OnPitch | undefined {
+    const id = s.setup.lineup.takers?.[role];
+    return id ? this.active(s).find(o => o.player.id === id) : undefined;
+  }
+
   private keeper(s: SideState): OnPitch | undefined {
     return s.pitch.find(o => o.slot === 'GK');
   }
@@ -245,6 +251,11 @@ export class Match {
     if (this.started && !this.finished) {
       this.say('tactic', `${this.teamName(side)} reshuffle: ${o.player.shortName} moves from ${from} to ${slot}.`, 0, side);
     }
+  }
+
+  /** Changes the captain and set-piece takers. */
+  setTakers(side: 0 | 1, takers: Takers) {
+    this.sides[side].setup.lineup.takers = { ...takers };
   }
 
   /** Changes the runs a player makes. */
@@ -614,7 +625,7 @@ export class Match {
     const s = this.sides[side];
     s.stats.corners++;
     this.say('corner', lines.corner(this.rng, { team: s.setup.team.shortName }), 0, side);
-    const taker = this.rng.weighted(this.outfield(s), o => (o.player.attributes.setPieces / 10) ** 4);
+    const taker = this.taker(s, 'corners') ?? this.rng.weighted(this.outfield(s), o => (o.player.attributes.setPieces / 10) ** 4);
     if (this.rng.chance(0.3)) {
       const header = this.pickShooter(side, 'setpiece');
       if (header === taker) return;
@@ -630,9 +641,17 @@ export class Match {
     }
   }
 
+  private freeKick(side: 0 | 1) {
+    const s = this.sides[side];
+    const taker = this.taker(s, 'freeKicks') ?? this.rng.weighted(this.outfield(s), o => (o.player.attributes.setPieces / 10) ** 4);
+    if (!taker) return;
+    this.say('chance', lines.freeKick(this.rng, { player: taker.player.shortName }), 1, side);
+    this.shoot(side, taker, undefined, 0.02 + 0.04 * (taker.player.attributes.setPieces / 20), 'long');
+  }
+
   private penalty(side: 0 | 1) {
     const s = this.sides[side];
-    const taker = this.rng.weighted(this.outfield(s), o =>
+    const taker = this.taker(s, 'penalties') ?? this.rng.weighted(this.outfield(s), o =>
       (o.player.attributes.setPieces / 10) ** 3 * (o.player.attributes.composure / 10) ** 2 * (this.w(o)[2] + 0.3));
     this.say('penalty', lines.penaltyTaken(this.rng, { player: taker.player.shortName }), 1, side);
     this.shoot(side, taker, undefined, 0.78, 'pen');
@@ -657,6 +676,8 @@ export class Match {
           this.say('foul', lines.foul(this.rng, { player: fouler.player.shortName, victim: victim.player.shortName }), 0, side);
         }
         this.booking(side, fouler, card);
+        // Now and then the foul gives a free kick close enough to shoot from.
+        if (this.rng.chance(0.025)) this.freeKick((1 - side) as 0 | 1);
       }
 
       // Keeper holding the ball too long (new 2026/27 law): rare, mostly when time-wasting.

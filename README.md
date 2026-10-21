@@ -12,7 +12,8 @@ The design is in the [design doc](https://claude.ai/code/artifact/3101f0e9-5060-
   - `generate.ts` fills in any attribute left at 0, as the original did.
   - `rng.ts` is the seeded random number generator, so any match can be replayed from its seed.
 - `src/data/squads.ts` holds four sample squads (2025/26, with hand-set ratings) for the demo.
-- `src/ui/` is the browser match demo.
+- `src/ui/` is the browser match demo, drawn like the original: a 640x480 screen with the photo backdrop, grey bevelled buttons and the original's bitmap fonts. `src/ui/retro/` holds the drawing code and the font renderer.
+- `scripts/original-assets.mjs` decodes the original game's fonts (`MY1`-`MY7.FNT`) and backdrops (`.PCX`) from `original/cm9798v2/`. The demo build embeds them when that folder is there and falls back to a system font without them.
 - `scripts/balance.ts` plays whole seasons of a generated league and compares the results with real Premier League averages.
 - `scripts/tactics.ts` checks that each tactic setting changes the results.
 

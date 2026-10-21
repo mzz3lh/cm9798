@@ -104,6 +104,16 @@ export interface Lineup {
   slots?: Position[];
   /** Optional runs per player id; anyone missing plays 'normal'. */
   runs?: Record<string, Run>;
+  /** Optional captain and set-piece takers, by player id. */
+  takers?: Takers;
+}
+
+/** The captain and set-piece takers picked on the tactics screen; one player can do them all. */
+export interface Takers {
+  captain?: string;
+  corners?: string;
+  freeKicks?: string;
+  penalties?: string;
 }
 
 export type MatchEventType =

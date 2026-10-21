@@ -165,6 +165,12 @@ export const lines = {
     'Foul by {player} on {victim}.',
   ], f),
 
+  freeKick: (rng: Rng, f: Fill) => say(rng, [
+    '{player} lines up the free kick...',
+    'Free kick in range. {player} stands over it...',
+    '{player} goes for goal from the free kick...',
+  ], f),
+
   yellow: (rng: Rng, f: Fill) => say(rng, [
     '{player} is booked.',
     'Yellow card for {player}.',
