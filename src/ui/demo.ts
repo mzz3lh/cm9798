@@ -12,7 +12,7 @@ import { FORMATIONS, familiarity } from '../engine/formations';
 import {
   MENTALITY_NAMES,
   type FormationName, type MatchEvent, type Mentality, type Player, type Position, type Run,
-  type Tactic, type Team,
+  type Tactic, type Takers, type Team,
 } from '../engine/types';
 import { fit, textWidth } from './retro/fonts';
 import { C, Screen, W, darken, lighten } from './retro/screen';
@@ -31,7 +31,7 @@ type View =
   | { kind: 'squad'; team: 'mine' | 'theirs' }
   | { kind: 'profile'; player: Player; team: Team; back: View; tab: ProfileTab }
   /** `theirs` shows the other side's tactics, to look at but not change. */
-  | { kind: 'tactics'; theirs?: Plan }
+  | { kind: 'tactics'; theirs?: Plan; back?: View }
   | { kind: 'confirm' }
   | { kind: 'match' }
   | { kind: 'info'; tab: InfoTab }
@@ -50,6 +50,29 @@ interface Plan {
   rows: (Place & { player: Player; sub?: Place & { id: string } })[];
   /** Substitutes first (the first BENCH_SIZE), then reserves. */
   bench: Player[];
+  takers: Takers;
+}
+
+const ROLES: { key: keyof Takers; tag: string; name: string }[] = [
+  { key: 'captain', tag: 'cpt', name: 'Captain' }, { key: 'corners', tag: 'cnr', name: 'Corners' },
+  { key: 'freeKicks', tag: 'dfk', name: 'Direct Free Kicks' }, { key: 'penalties', tag: 'pen', name: 'Penalties' },
+];
+
+/** Sensible first picks: the most influential captain, the best dead-ball men on the set pieces. */
+function defaultTakers(starters: Player[]): Takers {
+  const best = (f: (p: Player) => number) => [...starters].filter(p => p.positions[0] !== 'GK').sort((a, b) => f(b) - f(a))[0]?.id;
+  const a = (p: Player) => p.attributes;
+  return {
+    captain: best(p => a(p).influence * 2 + a(p).determination),
+    corners: best(p => a(p).setPieces * 2 + a(p).passing),
+    freeKicks: best(p => a(p).setPieces * 2 + a(p).shooting),
+    penalties: best(p => a(p).setPieces + a(p).composure + a(p).shooting),
+  };
+}
+
+/** Hands a departing player's captaincy and set pieces to the man replacing him. */
+function passTakers(takers: Takers, from: string, to: string) {
+  for (const r of ROLES) if (takers[r.key] === from) takers[r.key] = to;
 }
 
 let view: View = { kind: 'pickTeam', forOpponent: false, page: 0 };
@@ -68,6 +91,8 @@ let queue: MatchEvent[] = [];
 let line: { text: string; side?: 0 | 1; type?: string } | undefined;
 /** A player picked for a swap: a starter's row or a bench player. */
 let picked: { row: number } | { bench: string } | undefined;
+/** The starter whose captain and set-piece menu is open on the tactics screen. */
+let roleMenu: { row: number } | undefined;
 /** Places on the tactics pitch kept through a match, by player id. */
 let layout = new Map<string, Place>();
 
@@ -81,6 +106,7 @@ function newPlan(team: Team, tactic: Tactic): Plan {
     team, tactic: { ...tactic },
     rows: lu.starters.map((player, i) => ({ player, spot: spots[i] })),
     bench: [...lu.bench, ...team.squad.filter(p => !lu.starters.includes(p) && !lu.bench.includes(p))],
+    takers: defaultTakers(lu.starters),
   };
 }
 
@@ -97,6 +123,7 @@ function planFromMatch(side: 0 | 1 = mySide): Plan {
     team: s.setup.team, tactic: { ...s.setup.tactic },
     rows: s.pitch.map((o, i) => ({ player: o.player, ...(kept[i] ?? { spot: fresh[k++] }) })),
     bench: [...s.bench],
+    takers: { ...s.setup.lineup.takers },
   };
 }
 
@@ -104,13 +131,14 @@ function planFromMatch(side: 0 | 1 = mySide): Plan {
 const placeOf = (r: Plan['rows'][number]): Place => r.sub ?? r;
 const shownPlayer = (r: Plan['rows'][number]): Player => (r.sub ? plan.bench.find(b => b.id === r.sub!.id) : undefined) ?? r.player;
 
-const snapshot = () => JSON.stringify({ t: plan.tactic, r: plan.rows.map(r => ({ ...r, player: r.player.id })), b: plan.bench.map(p => p.id) });
+const snapshot = () => JSON.stringify({ t: plan.tactic, r: plan.rows.map(r => ({ ...r, player: r.player.id })), b: plan.bench.map(p => p.id), k: plan.takers });
 function restore(json: string) {
   const byId = (id: string) => plan.team.squad.find(p => p.id === id)!;
   const s = JSON.parse(json);
   plan.tactic = s.t;
   plan.rows = s.r.map((r: Place & { player: string; sub?: Place & { id: string } }) => ({ ...r, player: byId(r.player) }));
   plan.bench = s.b.map(byId);
+  plan.takers = s.k;
 }
 
 // ------------------------------------------------------------------ team colours
@@ -217,7 +245,7 @@ function drawMenu(s: Screen) {
   if (!atHome) s.text(`(away, at ${oppTeam.stadium})`, W / 2, 106, { font: 'MY2', colour: C.text, align: 'center' });
   s.tile('Play\nMatch', 54, 158, 130, 108, () => { view = { kind: 'confirm' }; });
   s.tile('Squad\nDetails', 188, 158, 130, 108, () => { view = { kind: 'squad', team: 'mine' }; });
-  s.tile('Match\nTactics', 322, 158, 130, 108, () => { undo = snapshot(); view = { kind: 'tactics' }; });
+  s.tile('Match\nTactics', 322, 158, 130, 108, () => { undo = snapshot(); view = { kind: 'tactics', back: view }; });
   s.tile('Opposition\nSquad', 456, 158, 130, 108, () => { view = { kind: 'squad', team: 'theirs' }; });
   s.tile('Change\nClubs', 122, 272, 130, 108, () => { view = { kind: 'pickTeam', forOpponent: false, page: 0 }; });
   s.tile(atHome ? 'Play\nAway' : 'Play\nAt Home', 256, 272, 130, 108, () => { atHome = !atHome; });
@@ -236,7 +264,7 @@ function drawSquad(s: Screen, which: 'mine' | 'theirs') {
   s.titleBar(`${team.name} Squad`, bg, fg);
   s.tag(DATE, W - 4, 0);
   const tabs: [string, (() => void) | undefined, boolean][] = which === 'mine'
-    ? [['Playing\nPositions', undefined, true], ['Match\nTactics', () => { undo = snapshot(); view = { kind: 'tactics' }; }, false], ['Opposition\nSquad', () => { view = { kind: 'squad', team: 'theirs' }; }, false], ['Premier\nLeague', undefined, false]]
+    ? [['Playing\nPositions', undefined, true], ['Match\nTactics', () => { undo = snapshot(); view = { kind: 'tactics', back: view }; }, false], ['Opposition\nSquad', () => { view = { kind: 'squad', team: 'theirs' }; }, false], ['Premier\nLeague', undefined, false]]
     : [['Playing\nPositions', undefined, true], ['Your\nSquad', () => { view = { kind: 'squad', team: 'mine' }; }, false], ['', undefined, false], ['Premier\nLeague', undefined, false]];
   tabs.forEach(([label, fn, active], i) => s.button(label, 10 + i * 155, 66, 153, 30, fn, { active, arrows: i === 0 }));
 
@@ -312,6 +340,7 @@ function handlePick(p: { row: number } | { bench: string }) {
       // Before the match too, the player brought in takes the other's place and runs.
       const i = plan.bench.indexOf(incoming);
       plan.bench[i] = row.player;
+      passTakers(plan.takers, row.player.id, incoming.id);
       row.player = incoming;
     }
   }
@@ -595,34 +624,60 @@ function drawTactics(s: Screen, readOnly = false) {
     const goingOn = e.bench ? plan.rows.find(x => x.sub?.id === e.bench) : undefined;
     const slot = r ? positionOf(r.spot) : undefined;
     const colour = i < 11 ? (slot && !r!.player.positions.includes(slot) ? C.gold : C.white) : '#9a9a9a';
-    s.text(fit(e.player.name, 150, 'MY2'), 46, y, { font: 'MY2', colour });
+    s.text(fit(e.player.name, 138, 'MY2'), 46, y, { font: 'MY2', colour });
     // Each player's positions from his profile, substitutes included, as on the squad screen.
-    s.text(fit(positionCode(e.player), 40, 'MY1'), 198, y + 1, { font: 'MY1', colour: goingOn ? C.yellow : C.gold });
-    if (inMatch && r) {
+    s.text(fit(positionCode(e.player), 36, 'MY1'), 188, y + 1, { font: 'MY1', colour: goingOn ? C.yellow : C.gold });
+    if (r?.sub) s.text('off', 228, y + 1, { font: 'MY1', colour: C.orange });
+    else if (goingOn) s.text('on', 228, y + 1, { font: 'MY1', colour: C.yellow });
+    else if (inMatch && r) {
       const cond = Math.round(match!.sides[side].pitch.find(o => o.player.id === r.player.id)?.condition ?? 100);
-      s.text(`${cond}%`, 240, y + 1, { font: 'MY1', colour: cond < 70 ? C.orange : C.cyan });
+      s.text(`${cond}%`, 226, y + 1, { font: 'MY1', colour: cond < 70 ? C.orange : C.cyan });
     }
-    if (r?.sub) s.text('off', 290, y + 1, { font: 'MY1', colour: C.orange });
-    if (goingOn) s.text('on', 290, y + 1, { font: 'MY1', colour: C.yellow });
-    s.area(44, y, 240, 14, { onClick: () => openProfile(e.player, team) });
+    // Captain and set-piece tags, as the original showed them: cpt, cnr, dfk, pen.
+    const tags = r ? ROLES.filter(x => plan.takers[x.key] === r.player.id) : [];
+    tags.forEach((x, k) => s.text(x.tag, 252 + k * 18, y + 1, { font: 'MY1', colour: C.gold }));
+    const menu = act(() => { if (r) roleMenu = { row: e.row! }; });
+    s.area(44, y, 180, 14, { onClick: () => openProfile(e.player, team), onRightClick: r ? menu : undefined });
+    if (r && menu) s.area(250, y, 74, 14, { onClick: menu });
   });
   const problem = readOnly ? undefined : planProblem();
   const hints = readOnly ? ['The opposition\'s tactics, to look at only.', 'Click a name for his profile.'] : problem ? [problem] : [
     inMatch ? 'Click a number, then a substitute\'s, to bring him on.' : 'Click two numbers to swap players.',
     'Drag a player to move him. Right-drag to draw a run.',
+    'Right-click a name for captain and set pieces.',
   ];
-  hints.forEach((h, i) => s.text(h, 168, 414 + i * 12, { font: 'MY1', colour: problem ? C.orange : C.text, align: 'center' }));
+  hints.forEach((h, i) => s.text(h, 168, 413 + i * 10, { font: 'MY1', colour: problem ? C.orange : C.text, align: 'center' }));
 
   drawPitch(s, readOnly);
   if (readOnly) { s.doneBar('Done', () => { view = { kind: 'info', tab: 'ratings' }; }); return; }
   s.doneBar('Done', () => {
     if (planProblem()) return;
     picked = undefined;
-    if (inMatch) { view = { kind: 'info', tab: 'ratings' }; } else view = { kind: 'menu' };
+    roleMenu = undefined;
+    // Back to where the tactics were opened from: the match info, the squad or the menu.
+    if (inMatch) view = { kind: 'info', tab: 'ratings' };
+    else view = (view.kind === 'tactics' && view.back) || { kind: 'menu' };
   }, 10, 496);
   s.bevel(508, 446, 122, 30, C.grey, C.greyLight, C.greyDark);
   s.label('Undo\nChanges', 508, 446, 122, 30, 'MY1', C.text);
   s.area(508, 446, 122, 30, { onClick: () => { if (undo) restore(undo); picked = undefined; } });
+  if (roleMenu) drawRoleMenu(s, roleMenu.row);
+}
+
+/** The captain and set-piece taker menu for one player; any one player can take them all. */
+function drawRoleMenu(s: Screen, row: number) {
+  const p = plan.rows[row].player;
+  // A click anywhere else closes the menu.
+  s.area(0, 0, W, 480, { onClick: () => { roleMenu = undefined; }, onRightClick: () => { roleMenu = undefined; } });
+  const x = 60, y = Math.min(300, 135 + row * 14 + 14), w = 200;
+  s.rect(x - 2, y - 2, w + 4, 22 + ROLES.length * 26 + 30, '#000');
+  s.rect(x, y, w, 20 + ROLES.length * 26 + 28, C.boxBlue);
+  s.text(fit(p.name, w - 12, 'MY2'), x + w / 2, y + 3, { font: 'MY2', colour: C.white, align: 'center' });
+  ROLES.forEach((r, i) => {
+    const on = plan.takers[r.key] === p.id;
+    s.button(r.name, x + 6, y + 20 + i * 26, w - 12, 24, () => { plan.takers[r.key] = p.id; }, { font: 'MY2', active: on });
+  });
+  s.button('Close', x + 6, y + 22 + ROLES.length * 26, w - 12, 24, () => { roleMenu = undefined; }, { font: 'MY2' });
 }
 
 const cap = (w: string) => w[0].toUpperCase() + w.slice(1);
@@ -770,11 +825,12 @@ function kickOff() {
   layout = new Map(plan.rows.map(r => [r.player.id, { spot: r.spot, runTo: r.runTo }]));
   const mine = {
     team: plan.team,
-    lineup: { starters: plan.rows.map(r => r.player), bench: plan.bench.slice(0, BENCH_SIZE), slots: plan.rows.map(r => positionOf(r.spot)), runs },
+    lineup: { starters: plan.rows.map(r => r.player), bench: plan.bench.slice(0, BENCH_SIZE), slots: plan.rows.map(r => positionOf(r.spot)), runs, takers: { ...plan.takers } },
     tactic: { ...plan.tactic }, ai: false,
   };
   const oppTactic: Tactic = { ...DEFAULT_TACTIC, formation: '4-2-3-1' };
-  const theirs = { team: oppTeam, lineup: autoLineup(oppTeam, oppTactic.formation), tactic: oppTactic, ai: true };
+  const oppLineup = autoLineup(oppTeam, oppTactic.formation);
+  const theirs = { team: oppTeam, lineup: { ...oppLineup, takers: defaultTakers(oppLineup.starters) }, tactic: oppTactic, ai: true };
   const seed = Math.floor(Math.random() * 2 ** 31);
   match = atHome ? new Match(mine, theirs, { seed }) : new Match(theirs, mine, { seed });
   queue = [];
@@ -963,7 +1019,10 @@ function applyPlan() {
   const s = m.sides[mySide];
   const onPitch = new Set(s.pitch.map(o => o.player.id));
   if (!plan.rows.every(r => onPitch.has(r.player.id))) return; // plan is from before kick-off
-  for (const r of plan.rows) if (r.sub) m.substitute(mySide, r.player.id, r.sub.id);
+  for (const r of plan.rows) {
+    if (r.sub && !m.substitute(mySide, r.player.id, r.sub.id)) passTakers(plan.takers, r.player.id, r.sub.id);
+  }
+  m.setTakers(mySide, plan.takers);
   if (JSON.stringify(plan.tactic) !== JSON.stringify(s.setup.tactic)) m.setTactic(mySide, { ...plan.tactic });
   for (const r of plan.rows) {
     const id = r.sub?.id ?? r.player.id, place = placeOf(r);
