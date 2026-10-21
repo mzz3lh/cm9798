@@ -2,7 +2,8 @@
 <title>CM 97/98 Match Demo</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-/* One 640x480 screen, scaled up to fit with square pixels, like DOSBox. */
+/* One 640x480 screen, scaled up to fit. The canvas draws at a whole multiple
+   of 640x480, so the browser only has to shrink it a little. */
 :root { color-scheme: dark; }
 html, body { margin: 0; height: 100%; background: #000; }
 body { display: grid; place-items: center; }
@@ -11,8 +12,6 @@ body { display: grid; place-items: center; }
   width: min(100vw, calc(100vh * 4 / 3));
   height: auto;
   aspect-ratio: 4 / 3;
-  image-rendering: pixelated;
-  image-rendering: crisp-edges;
   background: #000;
 }
 </style>

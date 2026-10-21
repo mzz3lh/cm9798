@@ -8,11 +8,11 @@
 import { DEMO_TEAMS } from '../data/squads';
 import { autoLineup } from '../engine/lineup';
 import { Match } from '../engine/match';
-import { FORMATIONS } from '../engine/formations';
+import { FORMATIONS, familiarity } from '../engine/formations';
 import {
-  MENTALITY_NAMES, VISIBLE_ATTRIBUTES,
+  MENTALITY_NAMES,
   type FormationName, type MatchEvent, type Mentality, type Player, type Position, type Run,
-  type Tactic, type Team, type VisibleAttribute,
+  type Tactic, type Team,
 } from '../engine/types';
 import { fit, textWidth } from './retro/fonts';
 import { C, Screen, W, darken, lighten } from './retro/screen';
@@ -20,7 +20,6 @@ import { C, Screen, W, darken, lighten } from './retro/screen';
 // ------------------------------------------------------------------ state
 
 const BENCH_SIZE = 9;
-const NUMBERS = 11 + BENCH_SIZE;
 const SPEEDS = { normal: 1300, fast: 350 };
 const DEFAULT_TACTIC: Tactic = { formation: '4-4-2', mentality: 0, passing: 'mixed', pressing: 'mid', width: 'normal', counterAttack: false, offsideTrap: false };
 
@@ -28,20 +27,24 @@ type View =
   | { kind: 'pickTeam'; forOpponent: boolean; page: number }
   | { kind: 'menu' }
   | { kind: 'squad'; team: 'mine' | 'theirs' }
-  | { kind: 'profile'; player: Player; team: Team; back: View }
+  | { kind: 'profile'; player: Player; team: Team; back: View; tab: ProfileTab }
   | { kind: 'tactics' }
   | { kind: 'confirm' }
   | { kind: 'match' }
   | { kind: 'info'; tab: InfoTab }
   | { kind: 'result' };
 type InfoTab = 'homeStats' | 'incidents' | 'stats' | 'ratings' | 'awayStats';
+type ProfileTab = 'skills' | 'condition';
+
+/** Where a player stands on the tactics pitch, and the spot he runs to, if any. */
+interface Place { spot: Spot; runTo?: Spot }
 
 /** The team sheet: who wears 1-11 and where they play, then the substitutes. */
 interface Plan {
   team: Team;
   tactic: Tactic;
-  /** Starters, in formation order, with their position and runs. */
-  rows: { player: Player; slot: Position; run: Run; replaceWith?: string }[];
+  /** Starters by shirt number, each with his place; `sub` is a substitute lined up to replace him. */
+  rows: (Place & { player: Player; sub?: Place & { id: string } })[];
   /** Substitutes first (the first BENCH_SIZE), then reserves. */
   bench: Player[];
 }
@@ -62,35 +65,48 @@ let queue: MatchEvent[] = [];
 let line: { text: string; side?: 0 | 1; type?: string } | undefined;
 /** A player picked for a swap: a starter's row or a bench player. */
 let picked: { row: number } | { bench: string } | undefined;
+/** Places on the tactics pitch kept through a match, by player id. */
+let layout = new Map<string, Place>();
 
 const DATE = new Date().toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'numeric', year: '2-digit' }).replace(/,/g, '').replace(/\//g, '.');
 
 function newPlan(team: Team, tactic: Tactic): Plan {
   const lu = autoLineup(team, tactic.formation);
-  const slots = FORMATIONS[tactic.formation];
+  // As in the original, each player starts where his profile says he plays.
+  const spots = spotsFor(lu.starters.map(p => p.positions[0]), new Set());
   return {
     team, tactic: { ...tactic },
-    rows: lu.starters.map((player, i) => ({ player, slot: slots[i], run: 'normal' })),
+    rows: lu.starters.map((player, i) => ({ player, spot: spots[i] })),
     bench: [...lu.bench, ...team.squad.filter(p => !lu.starters.includes(p) && !lu.bench.includes(p))],
   };
 }
 
 function planFromMatch(): Plan {
   const s = match!.sides[mySide];
+  const kept = s.pitch.map(o => {
+    const l = layout.get(o.player.id);
+    return l && positionOf(l.spot) === o.slot ? l : undefined;
+  });
+  const taken = new Set(kept.filter(Boolean).map(l => l!.spot));
+  const fresh = spotsFor(s.pitch.filter((_, i) => !kept[i]).map(o => o.slot), taken);
+  let k = 0;
   return {
     team: s.setup.team, tactic: { ...s.setup.tactic },
-    rows: s.pitch.map(o => ({ player: o.player, slot: o.slot, run: o.run })),
+    rows: s.pitch.map((o, i) => ({ player: o.player, ...(kept[i] ?? { spot: fresh[k++] }) })),
     bench: [...s.bench],
   };
 }
 
-const snapshot = () => JSON.stringify({ t: plan.tactic, r: plan.rows.map(r => [r.player.id, r.slot, r.run, r.replaceWith]), b: plan.bench.map(p => p.id) });
+/** The place a row shows on the pitch: the incoming substitute's if one is lined up. */
+const placeOf = (r: Plan['rows'][number]): Place => r.sub ?? r;
+const shownPlayer = (r: Plan['rows'][number]): Player => (r.sub ? plan.bench.find(b => b.id === r.sub!.id) : undefined) ?? r.player;
+
+const snapshot = () => JSON.stringify({ t: plan.tactic, r: plan.rows.map(r => ({ ...r, player: r.player.id })), b: plan.bench.map(p => p.id) });
 function restore(json: string) {
-  const all = [...plan.team.squad];
-  const byId = (id: string) => all.find(p => p.id === id)!;
+  const byId = (id: string) => plan.team.squad.find(p => p.id === id)!;
   const s = JSON.parse(json);
   plan.tactic = s.t;
-  plan.rows = s.r.map(([id, slot, run, rw]: [string, Position, Run, string | undefined]) => ({ player: byId(id), slot, run, replaceWith: rw ?? undefined }));
+  plan.rows = s.r.map((r: Place & { player: string; sub?: Place & { id: string } }) => ({ ...r, player: byId(r.player) }));
   plan.bench = s.b.map(byId);
 }
 
@@ -139,12 +155,6 @@ function positionCode(p: Player): string {
   if (lines.includes('GK')) return 'GK';
   return `${lines.join('/')}${sides.length ? ' ' + sides.join('') : lines.includes('S') || lines.includes('DM') ? ' C' : ''}`;
 }
-
-const POSITION_WORDS: Record<Position, string> = {
-  GK: 'Goalkeeper', DL: 'Defender (Left)', DC: 'Defender (Centre)', DR: 'Defender (Right)', DM: 'Defensive Midfielder',
-  ML: 'Midfielder (Left)', MC: 'Midfielder (Centre)', MR: 'Midfielder (Right)', AML: 'Attacking Midfielder (Left)',
-  AMC: 'Attacking Midfielder (Centre)', AMR: 'Attacking Midfielder (Right)', ST: 'Striker',
-};
 
 function scoreBars(s: Screen) {
   const [h, a] = match!.sides;
@@ -250,7 +260,7 @@ function drawSquad(s: Screen, which: 'mine' | 'theirs') {
     });
     s.text(fit(p.name.split(' ').slice(-1)[0] + ' ' + p.name[0], 150, 'MY4'), x + 60, y - 4, { font: 'MY4', colour: n && n <= 11 ? C.white : C.text });
     s.text(positionCode(p), x + 216, y + 2, { font: 'MY2', colour: C.gold });
-    s.area(x + 58, y, 156, 19, { onClick: () => { view = { kind: 'profile', player: p, team, back: { kind: 'squad', team: which } }; } });
+    s.area(x + 58, y, 156, 19, { onClick: () => openProfile(p, team) });
   });
   if (which === 'mine') {
     s.text('Click a number, then a player, to swap them. Click a name for his profile.', W / 2, 415, { font: 'MY1', colour: C.text, align: 'center' });
@@ -277,10 +287,8 @@ function handlePick(p: { row: number } | { bench: string }) {
   picked = undefined;
   const inMatch = view.kind === 'tactics' && match && !match.finished;
   if ('row' in first && 'row' in p) {
-    // Two players in the team swap places; the position and runs stay with the slot.
-    const a = plan.rows[first.row], b = plan.rows[p.row];
-    [a.player, b.player] = [b.player, a.player];
-    [a.replaceWith, b.replaceWith] = [b.replaceWith, a.replaceWith];
+    // Two players swap shirt numbers; each keeps his own place on the pitch.
+    [plan.rows[first.row], plan.rows[p.row]] = [plan.rows[p.row], plan.rows[first.row]];
   } else if ('bench' in first && 'bench' in p) {
     if (inMatch) { picked = p; return; }
     const i = plan.bench.findIndex(x => x.id === first.bench), j = plan.bench.findIndex(x => x.id === p.bench);
@@ -288,24 +296,79 @@ function handlePick(p: { row: number } | { bench: string }) {
   } else {
     const row = plan.rows['row' in first ? first.row : (p as { row: number }).row];
     const benchId = 'bench' in first ? first.bench : (p as { bench: string }).bench;
+    const incoming = plan.bench.find(x => x.id === benchId)!;
+    // The player coming in goes where his profile says he plays, in the space the other leaves.
+    const taken = new Set(plan.rows.filter(r => r !== row).map(r => placeOf(r).spot));
+    const [spot] = spotsFor([incoming.positions[0]], taken);
     if (inMatch) {
       // In a match this lines up a substitution, made on resume; again to cancel.
-      if (row.replaceWith === benchId) row.replaceWith = undefined;
+      if (row.sub?.id === benchId) row.sub = undefined;
       else {
-        for (const r of plan.rows) if (r.replaceWith === benchId) r.replaceWith = undefined;
-        row.replaceWith = benchId;
+        for (const r of plan.rows) if (r.sub?.id === benchId) r.sub = undefined;
+        row.sub = { id: benchId, spot };
       }
     } else {
-      const i = plan.bench.findIndex(x => x.id === benchId);
-      [row.player, plan.bench[i]] = [plan.bench[i], row.player];
+      const i = plan.bench.indexOf(incoming);
+      plan.bench[i] = row.player;
+      row.player = incoming;
+      row.spot = spot;
+      row.runTo = undefined;
     }
   }
 }
 
-const ATTRIBUTE_LABELS: Partial<Record<VisibleAttribute, string>> = {
-  offTheBall: 'Off the ball', setPieces: 'Set pieces', workRate: 'Work rate', firstTouch: 'First touch',
-};
-const label = (a: string) => ATTRIBUTE_LABELS[a as VisibleAttribute] ?? a[0].toUpperCase() + a.slice(1);
+/** A player's profile line, e.g. "Defender/Midfielder (Left)", as the original wrote it. */
+function positionWords(p: Player): string {
+  const LINE: Record<Position, string> = {
+    GK: 'Goalkeeper', DL: 'Defender', DC: 'Defender', DR: 'Defender', DM: 'Defensive Midfielder',
+    ML: 'Midfielder', MC: 'Midfielder', MR: 'Midfielder', AML: 'Attacking Midfielder', AMC: 'Attacking Midfielder',
+    AMR: 'Attacking Midfielder', ST: 'Striker',
+  };
+  const lines = [...new Set(p.positions.map(x => LINE[x]))];
+  if (lines[0] === 'Goalkeeper') return 'Goalkeeper';
+  const order = ['R', 'L', 'C'];
+  const sides = [...new Set(p.positions.filter(x => x !== 'DM' && x !== 'ST').map(x => x.slice(-1)))]
+    .sort((a, b) => order.indexOf(a) - order.indexOf(b));
+  const SIDE: Record<string, string> = { R: 'Right', L: 'Left', C: 'Centre' };
+  return sides.length ? `${lines.join('/')} (${sides.map(x => SIDE[x]).join('/')})` : lines.join('/');
+}
+
+type ProfileRow = [label: string, value: string | undefined];
+
+/** The two columns of the Playing Skills page, in the original's order. */
+function skillRows(p: Player): [ProfileRow[], ProfileRow[]] {
+  const a = p.attributes;
+  const n = (v: number) => String(Math.max(1, Math.min(20, Math.round(v))));
+  if (p.positions[0] === 'GK') {
+    return [[
+      ['Adaptability', n(a.adaptability)], ['Aerial ability', n(a.heading)], ['Aggression', n(a.aggression)],
+      ['Determination', n(a.determination)], ['Influence', n(a.influence)], ['Injury proneness', n(a.injuryProneness)],
+      ['Passing', n(a.passing)], ['Positioning', n(a.positioning)], ['Rushing Out', n(p.tendencies.comesOffLine)],
+      ['Shot stopping', n(a.handling)], ['Stamina', n(a.stamina)],
+    ], [
+      ['Strength', n(a.strength)], ['Technique', n(a.technique)], ['Creativity', undefined], ['Dribbling', undefined],
+      ['Flair', undefined], ['Off the ball', undefined], ['Set pieces', undefined], ['Shooting', undefined],
+    ]];
+  }
+  return [[
+    ['Adaptability', n(a.adaptability)], ['Aggression', n(a.aggression)], ['Creativity', n(a.creativity)],
+    ['Determination', n(a.determination)], ['Dribbling', n(a.dribbling)], ['Flair', n(a.flair)], ['Heading', n(a.heading)],
+    ['Influence', n(a.influence)], ['Injury proneness', n(a.injuryProneness)], ['Off the ball', n(a.offTheBall)], ['Pace', n(a.pace)],
+  ], [
+    ['Passing', n(a.passing)], ['Positioning', n(a.positioning)], ['Set pieces', n(a.setPieces)], ['Shooting', n(a.shooting)],
+    ['Stamina', n(a.stamina)], ['Strength', n(a.strength)], ['Tackling', n(a.tackling)], ['Technique', n(a.technique)],
+  ]];
+}
+
+/** What the match knows about a player right now: which side, condition, form and his stats. */
+function inMatch(p: Player) {
+  const m = match;
+  if (!m) return undefined;
+  const side = ([0, 1] as const).find(i => m.sides[i].setup.team.squad.some(x => x.id === p.id));
+  if (side === undefined) return undefined;
+  const s = m.sides[side];
+  return { side, on: s.pitch.find(o => o.player.id === p.id), stats: m.playerStats.get(p.id), goalDiff: s.stats.goals - m.sides[1 - side].stats.goals };
+}
 
 function drawProfile(s: Screen, v: Extract<View, { kind: 'profile' }>) {
   const { player: p, team } = v;
@@ -313,27 +376,77 @@ function drawProfile(s: Screen, v: Extract<View, { kind: 'profile' }>) {
   s.background();
   s.titleBar(fit(`${p.name} (${team.shortName})`, 600, 'MY7'), bg, fg);
   s.tag(DATE, W - 4, 0);
-  ['Playing\nSkills', 'Condition &\nAvailability', 'Contract\nInfo', 'Transfer\nInfo', 'Career\nHistory', 'Manager\nOptions']
-    .forEach((t, i) => s.button(t, 10 + i * 104, 66, 102, 30, undefined, { active: i === 0 }));
+  const tabs: [string, ProfileTab | undefined][] = [
+    ['Playing\nSkills', 'skills'], ['Condition &\nAvailability', 'condition'], ['Contract\nInfo', undefined],
+    ['Transfer\nInfo', undefined], ['Career\nHistory', undefined],
+  ];
+  tabs.forEach(([t, k], i) => s.button(t, 10 + i * 124, 66, 122, 30, k ? () => { v.tab = k; } : undefined, { active: k === v.tab }));
   s.rect(10, 100, 620, 30, '#000');
   s.rect(11, 101, 618, 28, C.boxBlue);
   s.rect(11, 101, 618, 1, C.boxBlueLight);
-  s.text(p.positions.map(x => POSITION_WORDS[x]).join(', '), W / 2, 104, { font: 'MY3', colour: C.white, align: 'center' });
+  s.text(positionWords(p), W / 2, 104, { font: 'MY3', colour: C.white, align: 'center' });
   s.panel(20, 134, 600, 306);
-  s.text(`Age ${p.age}. ${p.nation}.`, W / 2, 138, { font: 'MY4', colour: C.cyan, align: 'center' });
-  const attrs = VISIBLE_ATTRIBUTES.filter(a => !(p.positions[0] === 'GK' && ['shooting', 'dribbling', 'flair', 'creativity'].includes(a)));
-  const half = Math.ceil(attrs.length / 2);
-  attrs.forEach((a, i) => {
-    const x = i < half ? 28 : 330, y = 168 + (i % half) * 17;
-    const val = Math.round(p.attributes[a]);
-    s.text(label(a), x, y, { font: 'MY2', colour: C.text });
-    s.text(val ? String(val) : '-', x + 262, y, { font: 'MY2', colour: C.yellow, align: 'right' });
-  });
-  if (p.positions[0] === 'GK') {
-    s.text('Handling', 330, 168 + (attrs.length - half) * 17, { font: 'MY2', colour: C.text });
-    s.text(String(Math.round(p.attributes.handling)), 592, 168 + (attrs.length - half) * 17, { font: 'MY2', colour: C.yellow, align: 'right' });
+  // The data has no birth dates yet, so the line gives the age alone.
+  s.text(`Aged ${p.age}. ${p.nation}.`, W / 2, 140, { font: 'MY4', colour: C.cyan, align: 'center' });
+
+  const now = inMatch(p);
+  const condition = Math.round(now?.on?.condition ?? 100);
+  const rowLine = (x: number, y: number, w: number) => s.rect(x, y + 15, w, 1, 'rgba(150,150,150,0.25)');
+  if (v.tab === 'skills') {
+    const form = now?.on ? (now.on.form >= 1.08 ? 'Very Good' : now.on.form >= 1.03 ? 'Good' : now.on.form >= 0.97 ? 'Ok' : now.on.form >= 0.92 ? 'Poor' : 'Very Poor') : 'Ok';
+    const morale = now && now.goalDiff > 0 ? 'Good' : now && now.goalDiff < 0 ? 'Poor' : 'Ok';
+    const [left, right] = skillRows(p);
+    const rows: [ProfileRow[], number][] = [[left, 26], [[...right, ['Current Form', form], ['Morale', morale]], 328]];
+    for (const [list, x] of rows) {
+      list.forEach(([label, value], i) => {
+        const y = 170 + i * 17;
+        const word = value !== undefined && isNaN(Number(value));
+        s.text(label, x, y, { font: 'MY2', colour: value === undefined ? '#8a8a8a' : C.text });
+        s.text(value ?? '-', word ? x + 238 : x + 264, y, { font: 'MY2', colour: value === undefined ? C.gold : C.yellow, align: word ? 'center' : 'right' });
+        rowLine(x - 4, y, 290);
+      });
+    }
+    s.text(`Physical condition ${condition}%`, 470, 170 + 10 * 17, { font: 'MY2', colour: C.yellow, align: 'center' });
+  } else {
+    const st = now?.stats;
+    const rows: [string, string][] = [
+      ['Injuries', st?.injured ? 'Injured' : 'None'], ['Period out', '-'], ['Physical condition', `${condition}%`],
+      ['Domestic bans', st?.red ? '1 match' : '-'], ['European bans', '-'], ['International bans', '-'],
+    ];
+    rows.forEach(([label, value], i) => {
+      const y = 170 + i * 17;
+      s.text(label, 26, y, { font: 'MY2', colour: C.text });
+      s.text(value, 254, y, { font: 'MY2', colour: value === '-' ? C.text : C.yellow });
+      rowLine(22, y, 596);
+    });
   }
+  drawSeasonStats(s, p, now);
   s.doneBar('Done', () => { view = v.back; });
+}
+
+/** "Stats this season": this match is the season so far in the demo. */
+function drawSeasonStats(s: Screen, p: Player, now: ReturnType<typeof inMatch>) {
+  const heads = ['Apps', 'Goals', 'Assts', 'MoM', 'Yel', 'Red', 'Dsp', 'AvR'];
+  s.text('Stats this season', 26, 364, { font: 'MY2', colour: C.text });
+  heads.forEach((h, i) => s.button(h, 302 + i * 40, 362, 39, 17, undefined, { font: 'MY1', colour: C.text }));
+  const st = now?.stats;
+  const played = !!st && st.minutes > 0;
+  const motm = match?.finished && match.result().motmPlayer.id === p.id;
+  const domestic = [played ? 1 : 0, st?.goals ?? 0, st?.assists ?? 0, motm ? 1 : 0, st?.yellow ?? 0, st?.red ? 1 : 0, 0].map(String);
+  const zero = ['0', '0', '0', '0', '0', '0', '-'];
+  (['Domestic', 'European', 'International'] as const).forEach((label, r) => {
+    const y = 382 + r * 18;
+    s.text(label, 26, y, { font: 'MY2', colour: C.yellow });
+    (r === 0 ? domestic : zero).forEach((val, i) => s.text(val, 321 + i * 40, y, { font: 'MY2', colour: C.cyan, align: 'center' }));
+    const avr = r === 0 && played ? String(Math.max(1, Math.min(10, Math.round(st!.rating)))) : '';
+    s.blueBox(avr, 584, y, 34, 16, { font: 'MY1' });
+  });
+}
+
+/** Opens a player's profile from wherever he is listed; Done comes back here. */
+function openProfile(p: Player, team: Team) {
+  if (view.kind === 'match' && !paused) pause();
+  view = { kind: 'profile', player: p, team, back: view, tab: 'skills' };
 }
 
 // ------------------------------------------------------------------ tactics
@@ -341,37 +454,107 @@ function drawProfile(s: Screen, v: Extract<View, { kind: 'profile' }>) {
 const FORMATION_NAMES = Object.keys(FORMATIONS) as FormationName[];
 const cycle = <T,>(list: readonly T[], cur: T, dir: 1 | -1) => list[(list.indexOf(cur) + dir + list.length) % list.length];
 
-/** Where each position sits on the tactics pitch, as fractions across and up. */
-const SPOT: Record<Position, [number, number]> = {
-  GK: [0.5, 0.05], DR: [0.85, 0.24], DC: [0.5, 0.22], DL: [0.15, 0.24], DM: [0.5, 0.38],
-  MR: [0.85, 0.52], MC: [0.5, 0.52], ML: [0.15, 0.52], AMR: [0.82, 0.7], AMC: [0.5, 0.7], AML: [0.18, 0.7], ST: [0.5, 0.86],
-};
 const PITCH = { x: 330, y: 8, w: 300, h: 428 };
 
-function pitchSpots(): { x: number; y: number }[] {
-  // Players sharing a position are spread across it.
-  const out: { x: number; y: number }[] = [];
+// The preset spots on the tactics pitch, as in the original: seven lanes
+// across and nine depths up the pitch, plus the goalkeeper's spot. Players
+// are dragged between them and runs are drawn from one to another.
+const LANES = [0.16, 0.27, 0.38, 0.5, 0.62, 0.73, 0.84];
+const DEPTHS = [0.12, 0.21, 0.31, 0.41, 0.52, 0.62, 0.72, 0.85, 0.93];
+/** depth * LANES.length + lane, or GK_SPOT. */
+type Spot = number;
+const GK_SPOT: Spot = -1;
+const ALL_SPOTS: Spot[] = [GK_SPOT, ...DEPTHS.flatMap((_, d) => LANES.map((_, l) => d * LANES.length + l))];
+const laneOf = (s: Spot) => s % LANES.length;
+const depthOf = (s: Spot) => (s === GK_SPOT ? -1 : Math.floor(s / LANES.length));
+
+function spotXY(s: Spot): { x: number; y: number } {
+  if (s === GK_SPOT) return { x: PITCH.x + PITCH.w / 2, y: PITCH.y + PITCH.h - 12 };
+  return { x: PITCH.x + LANES[laneOf(s)] * PITCH.w, y: PITCH.y + PITCH.h - DEPTHS[depthOf(s)] * PITCH.h };
+}
+
+/** The position the match engine plays from a spot. */
+function positionOf(s: Spot): Position {
+  if (s === GK_SPOT) return 'GK';
+  const lane = laneOf(s), depth = depthOf(s);
+  const side = lane === 0 ? 'L' : lane === LANES.length - 1 ? 'R' : 'C';
+  if (depth <= 2) return `D${side}` as Position;
+  if (depth === 3) return side === 'C' ? 'DM' : (`M${side}` as Position);
+  if (depth <= 5) return `M${side}` as Position;
+  if (depth === 6) return `AM${side}` as Position;
+  return side === 'C' ? 'ST' : (`AM${side}` as Position);
+}
+
+/** A run makes the engine get forward or hold back; a run across the pitch changes nothing yet. */
+function runOf(p: Place): Run {
+  if (p.runTo === undefined || p.spot === GK_SPOT) return 'normal';
+  const d = depthOf(p.runTo) - depthOf(p.spot);
+  return d > 0 ? 'forward' : d < 0 ? 'hold' : 'normal';
+}
+
+function nearestSpot(x: number, y: number, free?: (s: Spot) => boolean): Spot {
+  let best = GK_SPOT, d = Infinity;
+  for (const s of ALL_SPOTS) {
+    if (free && !free(s)) continue;
+    const p = spotXY(s);
+    const dd = (p.x - x) ** 2 + (p.y - y) ** 2;
+    if (dd < d) { d = dd; best = s; }
+  }
+  return best;
+}
+
+/** Where each position stands by default: its depth and the lanes it prefers. */
+const HOME: Record<Exclude<Position, 'GK'>, { depth: number; lanes?: number[] }> = {
+  DL: { depth: 1, lanes: [0, 1] }, DC: { depth: 1 }, DR: { depth: 1, lanes: [6, 5] },
+  DM: { depth: 3 }, ML: { depth: 4, lanes: [0, 1] }, MC: { depth: 4 }, MR: { depth: 4, lanes: [6, 5] },
+  AML: { depth: 6, lanes: [0, 1] }, AMC: { depth: 6 }, AMR: { depth: 6, lanes: [6, 5] }, ST: { depth: 7 },
+};
+/** Central players spread across the middle lanes by how many share the position. */
+const CENTRE_LANES = [[3], [2, 4], [1, 3, 5], [1, 2, 4, 5], [1, 2, 3, 4, 5]];
+
+/** Spots for players of the given positions, avoiding spots already taken. */
+function spotsFor(positions: Position[], taken: Set<Spot>): Spot[] {
+  const used = new Set(taken);
+  const out: Spot[] = new Array(positions.length);
+  const want = (i: number, s: Spot) => {
+    const target = used.has(s) ? nearestFree(s, used) : s;
+    out[i] = target;
+    used.add(target);
+  };
   const groups = new Map<Position, number[]>();
-  plan.rows.forEach((r, i) => groups.set(r.slot, [...(groups.get(r.slot) ?? []), i]));
-  for (const [slot, idx] of groups) {
-    idx.forEach((i, k) => {
-      const [fx, fy] = SPOT[slot];
-      const spread = slot === 'GK' ? 0 : 0.22;
-      const dx = idx.length > 1 ? (k - (idx.length - 1) / 2) * spread : 0;
-      out[i] = { x: PITCH.x + (Math.max(0.08, Math.min(0.92, fx + dx))) * PITCH.w, y: PITCH.y + PITCH.h - fy * PITCH.h - 8 };
-    });
+  positions.forEach((pos, i) => groups.set(pos, [...(groups.get(pos) ?? []), i]));
+  for (const [pos, idx] of groups) {
+    if (pos === 'GK') { idx.forEach(i => want(i, GK_SPOT)); continue; }
+    const home = HOME[pos];
+    const lanes = home.lanes ?? CENTRE_LANES[Math.min(idx.length, CENTRE_LANES.length) - 1];
+    idx.forEach((i, k) => want(i, home.depth * LANES.length + (lanes[k] ?? lanes[lanes.length - 1])));
   }
   return out;
 }
 
-function nearestSlot(x: number, y: number): Position {
-  const fx = (x - PITCH.x) / PITCH.w, fy = (PITCH.y + PITCH.h - y) / PITCH.h;
-  let best: Position = 'MC', d = Infinity;
-  for (const [pos, [sx, sy]] of Object.entries(SPOT) as [Position, [number, number]][]) {
-    const dd = (sx - fx) ** 2 + (sy - fy) ** 2;
-    if (dd < d) { d = dd; best = pos; }
+function nearestFree(s: Spot, used: Set<Spot>): Spot {
+  const from = s === GK_SPOT ? { l: 3, d: 0 } : { l: laneOf(s), d: depthOf(s) };
+  let best = s, bd = Infinity;
+  for (const t of ALL_SPOTS) {
+    if (t === GK_SPOT || used.has(t)) continue;
+    // Prefer the same depth: a defender moved aside stays in the back line.
+    const dd = (laneOf(t) - from.l) ** 2 + 2.5 * (depthOf(t) - from.d) ** 2;
+    if (dd < bd) { bd = dd; best = t; }
   }
   return best;
+}
+
+/** Defenders-midfielders-forwards, e.g. "4-5-1"; attacking midfielders count as midfielders. */
+function shapeOf(positions: Position[]): string {
+  const lines = [0, 0, 0];
+  for (const p of positions) if (p !== 'GK') lines[p[0] === 'D' && p !== 'DM' ? 0 : p === 'ST' ? 2 : 1]++;
+  return lines.join('-');
+}
+
+/** The formation's name if the pitch still has its shape, otherwise the shape the pitch shows. */
+function formationLabel(): string {
+  const shape = shapeOf(plan.rows.map(r => positionOf(placeOf(r).spot)));
+  return shape === shapeOf(FORMATIONS[plan.tactic.formation]) ? plan.tactic.formation : shape;
 }
 
 function drawTactics(s: Screen) {
@@ -382,7 +565,7 @@ function drawTactics(s: Screen) {
   s.titleBar(plan.team.name, bg, fg, 8, 318);
   const cyc = (labelText: string, x: number, w: number, onPrev: () => void, onNext: () => void) =>
     s.button(labelText, x, 66, w, 30, onNext, { arrows: true, onRightClick: onPrev });
-  cyc(`${t.formation}\nFormation`, 10, 104, () => setFormation(cycle(FORMATION_NAMES, t.formation, -1)), () => setFormation(cycle(FORMATION_NAMES, t.formation, 1)));
+  cyc(`${formationLabel()}\nFormation`, 10, 104, () => setFormation(cycle(FORMATION_NAMES, t.formation, -1)), () => setFormation(cycle(FORMATION_NAMES, t.formation, 1)));
   const ments = [-2, -1, 0, 1, 2] as Mentality[];
   cyc(`${MENTALITY_NAMES[t.mentality]}\nMentality`, 116, 104, () => { t.mentality = cycle(ments, t.mentality, -1); }, () => { t.mentality = cycle(ments, t.mentality, 1); });
   const passing = ['short', 'mixed', 'direct'] as const;
@@ -405,21 +588,25 @@ function drawTactics(s: Screen) {
     const lit = !!picked && JSON.stringify(picked) === JSON.stringify(pick);
     s.blueBox(String(i + 1), 14, y, 26, 13, { lit, onClick: () => handlePick(pick) });
     const r = e.row !== undefined ? plan.rows[e.row] : undefined;
-    const incoming = r?.replaceWith ? plan.bench.find(b => b.id === r.replaceWith) : undefined;
-    const goingOn = e.bench ? plan.rows.find(x => x.replaceWith === e.bench) : undefined;
-    const colour = i < 11 ? (r && !r.player.positions.includes(r.slot) ? C.gold : C.white) : '#9a9a9a';
+    const goingOn = e.bench ? plan.rows.find(x => x.sub?.id === e.bench) : undefined;
+    const slot = r ? positionOf(r.spot) : undefined;
+    const colour = i < 11 ? (slot && !r!.player.positions.includes(slot) ? C.gold : C.white) : '#9a9a9a';
     s.text(fit(e.player.name, 150, 'MY2'), 46, y, { font: 'MY2', colour });
-    if (r) s.text(r.slot, 206, y, { font: 'MY1', colour: C.gold });
+    if (slot) s.text(slot, 206, y, { font: 'MY1', colour: C.gold });
+    if (goingOn) s.text(positionOf(goingOn.sub!.spot), 206, y, { font: 'MY1', colour: C.yellow });
     if (inMatch && r) {
       const cond = Math.round(match!.sides[mySide].pitch.find(o => o.player.id === r.player.id)?.condition ?? 100);
       s.text(`${cond}%`, 240, y + 1, { font: 'MY1', colour: cond < 70 ? C.orange : C.cyan });
     }
-    if (incoming) s.text(`off`, 290, y + 1, { font: 'MY1', colour: C.orange });
-    if (goingOn) s.text(`on`, 290, y + 1, { font: 'MY1', colour: C.yellow });
-    s.area(44, y, 240, 14, { onClick: () => { view = { kind: 'profile', player: e.player, team: plan.team, back: { kind: 'tactics' } }; } });
+    if (r?.sub) s.text('off', 290, y + 1, { font: 'MY1', colour: C.orange });
+    if (goingOn) s.text('on', 290, y + 1, { font: 'MY1', colour: C.yellow });
+    s.area(44, y, 240, 14, { onClick: () => openProfile(e.player, plan.team) });
   });
   const problem = planProblem();
-  const hints = problem ? [problem] : [inMatch ? 'Click a player, then a substitute, to bring him on.' : 'Click two numbers to swap players.', 'Drag on the pitch to move. Right-click for runs.'];
+  const hints = problem ? [problem] : [
+    inMatch ? 'Click a number, then a substitute\'s, to bring him on.' : 'Click two numbers to swap players.',
+    'Drag a player to move him. Right-drag to draw a run.',
+  ];
   hints.forEach((h, i) => s.text(h, 168, 414 + i * 12, { font: 'MY1', colour: problem ? C.orange : C.text, align: 'center' }));
 
   drawPitch(s);
@@ -435,9 +622,28 @@ function drawTactics(s: Screen) {
 
 const cap = (w: string) => w[0].toUpperCase() + w.slice(1);
 
+/** Lines the team up in a formation, each player taking the slot that suits him best. */
 function setFormation(f: FormationName) {
   plan.tactic.formation = f;
-  FORMATIONS[f].forEach((slot, i) => { if (plan.rows[i]) plan.rows[i].slot = slot; });
+  const slots = FORMATIONS[f];
+  const free = new Set(plan.rows.map((_, i) => i));
+  const given: Position[] = new Array(plan.rows.length);
+  // Fill the keeper first, then the slots with the fewest natural players.
+  const order = slots.map((slot, i) => ({ slot, i, n: plan.rows.filter(r => shownPlayer(r).positions.includes(slot)).length }))
+    .sort((a, b) => (a.slot === 'GK' ? -1 : b.slot === 'GK' ? 1 : a.n - b.n));
+  for (const { slot } of order) {
+    let best = -1, score = -1;
+    for (const i of free) {
+      const p = shownPlayer(plan.rows[i]);
+      const sc = familiarity(p.positions, slot) * 1000 + p.ability;
+      if (sc > score) { score = sc; best = i; }
+    }
+    if (best < 0) break;
+    given[best] = slot;
+    free.delete(best);
+  }
+  const spots = spotsFor(given, new Set());
+  plan.rows.forEach((r, i) => { const pl = placeOf(r); pl.spot = spots[i]; pl.runTo = undefined; });
 }
 
 function drawPitch(s: Screen) {
@@ -461,46 +667,75 @@ function drawPitch(s: Screen) {
   g.setLineDash([4, 4]);
   g.beginPath();
   for (const f of [0.33, 0.67]) { g.moveTo(x, y + h * f + 0.5); g.lineTo(x + w, y + h * f + 0.5); }
-  for (const f of [0.17, 0.83]) { g.moveTo(x + w * f + 0.5, y); g.lineTo(x + w * f + 0.5, y + h); }
+  for (const f of [0.11, 0.89]) { g.moveTo(x + w * f + 0.5, y); g.lineTo(x + w * f + 0.5, y + h); }
   g.stroke();
   g.setLineDash([]);
 
-  const spots = pitchSpots();
+  const drag = s.dragging;
+  const dragRow = drag?.hit.id?.startsWith('row:') ? Number(drag.hit.id.slice(4)) : undefined;
+  const onPitch = (px: number, py: number) => px >= x && px < x + w && py >= y && py < y + h;
+  // While dragging, the preset spots show as dots.
+  if (dragRow !== undefined) for (const sp of ALL_SPOTS) { const p = spotXY(sp); s.rect(Math.round(p.x) - 1, Math.round(p.y) - 1, 3, 3, C.pitchLine); }
+
+  const dashed = (a: { x: number; y: number }, b: { x: number; y: number }, colour: string) => {
+    g.strokeStyle = colour;
+    g.setLineDash([3, 3]);
+    g.beginPath(); g.moveTo(a.x + 0.5, a.y + 0.5); g.lineTo(b.x + 0.5, b.y + 0.5); g.stroke();
+    g.setLineDash([]);
+    s.text('x', b.x, b.y - 7, { font: 'MY1', colour, align: 'center' });
+  };
+
   plan.rows.forEach((row, i) => {
-    const p = spots[i];
-    // Runs: a dashed line to an x where he goes, forward or back.
-    if (row.run !== 'normal' && row.slot !== 'GK') {
-      const ty = p.y + (row.run === 'forward' ? -60 : 40);
-      g.strokeStyle = C.yellow;
-      g.setLineDash([3, 3]);
-      g.beginPath(); g.moveTo(p.x + 0.5, p.y); g.lineTo(p.x + 0.5, ty); g.stroke();
-      g.setLineDash([]);
-      s.text('x', p.x, ty - 7, { font: 'MY1', colour: C.yellow, align: 'center' });
-    }
+    const place = placeOf(row);
+    const p = spotXY(place.spot);
+    if (place.runTo !== undefined) dashed(p, spotXY(place.runTo), C.yellow);
     const lit = !!picked && 'row' in picked && picked.row === i;
-    const incoming = row.replaceWith ? plan.bench.find(b => b.id === row.replaceWith) : undefined;
-    const name = (incoming ?? row.player).shortName.split(' ').slice(-1)[0];
-    s.text(String(i + 1), p.x, p.y - 8, { font: 'MY2', colour: lit ? C.cyan : C.yellow, align: 'center' });
-    s.text(fit(name, 90, 'MY1'), p.x, p.y + 5, { font: 'MY1', colour: incoming ? C.yellow : lit ? C.cyan : C.text, align: 'center' });
-    const bw = Math.max(36, textWidth(name, 'MY1') + 6);
-    s.area(p.x - bw / 2, p.y - 8, bw, 26, {
+    const name = shownPlayer(row).shortName.split(' ').slice(-1)[0];
+    s.text(String(i + 1), p.x, p.y - 13, { font: 'MY2', colour: lit ? C.cyan : C.yellow, align: 'center' });
+    s.text(fit(name, 80, 'MY1'), p.x, p.y, { font: 'MY1', colour: row.sub ? C.yellow : lit ? C.cyan : C.text, align: 'center' });
+    const bw = Math.max(30, Math.min(80, textWidth(name, 'MY1')) + 4);
+    s.area(p.x - bw / 2, p.y - 13, bw, 25, {
+      id: `row:${i}`,
       onClick: () => handlePick({ row: i }),
-      onRightClick: () => { if (row.slot !== 'GK') row.run = row.run === 'normal' ? 'forward' : row.run === 'forward' ? 'hold' : 'normal'; },
+      // A right-click clears his run; a right-drag draws a new one.
+      onRightClick: () => { place.runTo = undefined; },
+      onRightDrop: (dx, dy) => {
+        if (place.spot === GK_SPOT || !onPitch(dx, dy)) return;
+        const to = nearestSpot(dx, dy, sp => sp !== GK_SPOT);
+        place.runTo = to === place.spot ? undefined : to;
+      },
       onDrop: (dx, dy) => {
-        if (dx < PITCH.x || dy < PITCH.y || dy > PITCH.y + PITCH.h) return;
-        row.slot = nearestSlot(dx, dy);
+        if (!onPitch(dx, dy)) return;
+        const to = nearestSpot(dx, dy);
+        // Dropped on a team-mate: the two change places.
+        const other = plan.rows.find(o => o !== row && placeOf(o).spot === to);
+        if (other) { placeOf(other).spot = place.spot; placeOf(other).runTo = undefined; }
+        place.spot = to;
+        if (place.runTo === to || to === GK_SPOT) place.runTo = undefined;
         picked = undefined;
       },
     });
   });
+
+  // What the drag will do, drawn as it goes: the player at his new spot, or the run line.
+  if (drag && dragRow !== undefined && onPitch(drag.cx, drag.cy)) {
+    const place = placeOf(plan.rows[dragRow]);
+    if (drag.button === 2 && place.spot !== GK_SPOT) {
+      dashed(spotXY(place.spot), spotXY(nearestSpot(drag.cx, drag.cy, sp => sp !== GK_SPOT)), C.cyan);
+    } else if (drag.button === 0) {
+      const to = spotXY(nearestSpot(drag.cx, drag.cy));
+      s.text(String(dragRow + 1), to.x, to.y - 13, { font: 'MY2', colour: C.cyan, align: 'center' });
+      s.text(fit(shownPlayer(plan.rows[dragRow]).shortName.split(' ').slice(-1)[0], 80, 'MY1'), to.x, to.y, { font: 'MY1', colour: C.cyan, align: 'center' });
+    }
+  }
 }
 
 function planProblem(): string | undefined {
-  const keepers = plan.rows.filter(r => r.slot === 'GK').length;
-  if (keepers !== 1) return 'Put exactly one player in goal.';
+  const keepers = plan.rows.filter(r => placeOf(r).spot === GK_SPOT).length;
+  if (keepers !== 1) return 'Put a player in goal.';
   if (match && !match.finished) {
     const left = match.subsLeft(mySide);
-    const subs = plan.rows.filter(r => r.replaceWith).length;
+    const subs = plan.rows.filter(r => r.sub).length;
     if (subs > left.subs) return `Only ${left.subs} substitutes left.`;
     if (subs > 0 && !match.atHalfTime && left.windows === 0) return 'All substitution windows used.';
   }
@@ -525,10 +760,11 @@ function drawConfirm(s: Screen) {
 function kickOff() {
   mySide = atHome ? 0 : 1;
   const runs: Record<string, Run> = {};
-  for (const r of plan.rows) runs[r.player.id] = r.run;
+  for (const r of plan.rows) runs[r.player.id] = runOf(r);
+  layout = new Map(plan.rows.map(r => [r.player.id, { spot: r.spot, runTo: r.runTo }]));
   const mine = {
     team: plan.team,
-    lineup: { starters: plan.rows.map(r => r.player), bench: plan.bench.slice(0, BENCH_SIZE), slots: plan.rows.map(r => r.slot), runs },
+    lineup: { starters: plan.rows.map(r => r.player), bench: plan.bench.slice(0, BENCH_SIZE), slots: plan.rows.map(r => positionOf(r.spot)), runs },
     tactic: { ...plan.tactic }, ai: false,
   };
   const oppTactic: Tactic = { ...DEFAULT_TACTIC, formation: '4-2-3-1' };
@@ -550,6 +786,14 @@ function drawMatch(s: Screen) {
   s.tag('Premier League', W - 4, 58);
   if (m.minute > 0 && !m.atHalfTime && !m.finished) s.text(m.displayMinute.replace(/'$/, ''), W / 2, 56, { font: 'MY7', colour: C.yellow, align: 'center' });
   s.panel(20, 90, 600, 310);
+  const running = m.minute > 0 && !paused && !m.finished && !m.atHalfTime;
+  if (running) {
+    s.tag('Click or press Return to pause', 4, 58, 'left');
+    // Clicking anywhere on the match stops it for the match info screens, as the bar below does.
+    s.area(0, 56, W, 356, { onClick: pauseToInfo });
+  } else if (m.minute > 0 && !m.finished && !m.atHalfTime) {
+    s.tag('Paused: click the bar below or press Return', 4, 58, 'left');
+  }
   drawScorers(s, 96);
   if (m.minute > 0) s.text(`At ${m.sides[0].setup.team.stadium}`, 24, 96 + 18 * Math.max(1, scorerRows()), { font: 'MY3', colour: C.cyan });
   if (line) drawCommentary(s, line);
@@ -567,8 +811,14 @@ function drawMatch(s: Screen) {
   s.doneBar(status, () => {
     if (m.finished || m.atHalfTime) { stop(); view = { kind: 'info', tab: 'ratings' }; return; }
     // Kick off, or stop the game and go to the match info screens, as Return does.
-    if (paused) { paused = false; tick(); } else { pause(); view = { kind: 'info', tab: 'ratings' }; }
+    if (paused) { paused = false; tick(); } else pauseToInfo();
   });
+}
+
+/** Stops the match and shows the match info screens, where the tactics screen makes changes. */
+function pauseToInfo() {
+  pause();
+  view = { kind: 'info', tab: 'ratings' };
 }
 
 function scorerRows() {
@@ -580,26 +830,27 @@ function scorerRows() {
 function drawScorers(s: Screen, y: number) {
   const m = match!;
   for (const side of [0, 1] as const) {
-    const byName = new Map<string, string[]>();
+    const byName = new Map<string, { player?: Player; mins: string[] }>();
     for (const e of m.events) {
       if (e.type !== 'goal' || e.side !== side) continue;
-      const name = scorerName(e);
-      byName.set(name, [...(byName.get(name) ?? []), e.clock]);
+      const p = scorer(e);
+      const name = p?.shortName ?? 'Goal';
+      byName.set(name, { player: p, mins: [...(byName.get(name)?.mins ?? []), e.clock] });
     }
-    [...byName].forEach(([name, mins], i) => {
+    [...byName].forEach(([name, { player, mins }], i) => {
       const x = side === 0 ? 24 : 334;
-      s.text(name, x, y + i * 18, { font: 'MY3', colour: C.text });
+      const w = s.text(name, x, y + i * 18, { font: 'MY3', colour: C.text });
       s.text(mins.join(', '), x + 282, y + i * 18, { font: 'MY3', colour: C.yellow, align: 'right' });
+      if (player) s.area(x, y + i * 18, w, 18, { onClick: () => openProfile(player, m.sides[side].setup.team) });
     });
   }
 }
 
-function scorerName(e: MatchEvent): string {
+function scorer(e: MatchEvent): Player | undefined {
   const m = match!;
   const squad = [...m.sides[e.side!].setup.lineup.starters, ...m.sides[e.side!].setup.lineup.bench];
   // The goal text names the scorer; pick the longest short name it contains.
-  const hit = squad.filter(p => e.text.includes(p.shortName)).sort((a, b) => b.shortName.length - a.shortName.length)[0];
-  return hit?.shortName ?? 'Goal';
+  return squad.filter(p => e.text.includes(p.shortName)).sort((a, b) => b.shortName.length - a.shortName.length)[0];
 }
 
 function drawCommentary(s: Screen, l: NonNullable<typeof line>) {
@@ -705,12 +956,13 @@ function applyPlan() {
   const s = m.sides[mySide];
   const onPitch = new Set(s.pitch.map(o => o.player.id));
   if (!plan.rows.every(r => onPitch.has(r.player.id))) return; // plan is from before kick-off
-  for (const r of plan.rows) if (r.replaceWith) m.substitute(mySide, r.player.id, r.replaceWith);
+  for (const r of plan.rows) if (r.sub) m.substitute(mySide, r.player.id, r.sub.id);
   if (JSON.stringify(plan.tactic) !== JSON.stringify(s.setup.tactic)) m.setTactic(mySide, { ...plan.tactic });
   for (const r of plan.rows) {
-    const id = r.replaceWith ?? r.player.id;
-    m.setPosition(mySide, id, r.slot);
-    m.setRun(mySide, id, r.run);
+    const id = r.sub?.id ?? r.player.id, place = placeOf(r);
+    m.setPosition(mySide, id, positionOf(place.spot));
+    m.setRun(mySide, id, runOf(place));
+    layout.set(id, { spot: place.spot, runTo: place.runTo });
   }
   plan = planFromMatch();
 }
@@ -734,6 +986,7 @@ function drawRatings(s: Screen) {
       s.blueBox(String(i + 1), x, Math.round(y), 30, 15, { font: 'MY1' });
       const colour = p.id === motm ? C.cyan : played || onPitch.has(p.id) ? C.text : '#8a8a8a';
       s.text(fit(p.name, 160, 'MY2'), x + 40, Math.round(y), { font: 'MY2', colour });
+      s.area(x + 40, Math.round(y), 200, 15, { onClick: () => openProfile(p, m.sides[side].setup.team) });
       if (st?.yellow) s.rect(x + 34, Math.round(y) + 2, 4, 11, st.red ? '#f70000' : C.gold);
       else if (st?.red) s.rect(x + 34, Math.round(y) + 2, 4, 11, '#f70000');
       if (played) {
@@ -800,6 +1053,7 @@ function drawPlayerStats(s: Screen, side: 0 | 1) {
     s.blueBox(String(i + 1), 24, Math.round(y), 26, 14, { font: 'MY1' });
     const played = !!st && st.minutes > 0;
     s.text(fit(p.name, 170, 'MY1'), 58, Math.round(y), { font: 'MY1', colour: played ? C.text : '#8a8a8a' });
+    s.area(58, Math.round(y), 170, 14, { onClick: () => openProfile(p, m.sides[side].setup.team) });
     if (!st || !played) return;
     cols.forEach(([, f], c) => s.text(f(st), 256 + c * 38, Math.round(y), { font: 'MY1', colour: c === 2 && st.goals ? C.yellow : C.cyan, align: 'center' }));
     const cond = pitch.find(o => o.player.id === p.id)?.condition;
@@ -830,6 +1084,8 @@ function drawResult(s: Screen) {
 const canvas = document.getElementById('screen') as HTMLCanvasElement;
 const backdrop: { image: HTMLImageElement | undefined } = { image: undefined };
 const screen = new Screen(canvas, backdrop);
+// Keys only reach the page once it has focus, which an embedded page lacks until clicked.
+canvas.addEventListener('pointerdown', () => window.focus());
 
 const photo = window.CM_ASSETS?.backdrops.BOBBY;
 if (photo) {
@@ -862,7 +1118,7 @@ document.addEventListener('keydown', e => {
   } else if (e.key === 'Enter') {
     e.preventDefault();
     if (match.atHalfTime) return;
-    if (paused) { paused = false; tick(); } else { pause(); view = { kind: 'info', tab: 'ratings' }; }
+    if (paused) { paused = false; tick(); } else pauseToInfo();
   }
   screen.render();
 });

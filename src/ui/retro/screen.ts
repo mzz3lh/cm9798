@@ -33,36 +33,67 @@ export const C = {
 
 export interface Hit {
   x: number; y: number; w: number; h: number;
+  /** Lets a screen tell which of its areas a drag started on. */
+  id?: string;
   onClick?: () => void;
   onRightClick?: () => void;
   /** Drag start; the handler gets the drop point. */
   onDrop?: (x: number, y: number) => void;
+  /** Right-button drag (or a long press and drag on a touch screen). */
+  onRightDrop?: (x: number, y: number) => void;
 }
 
 export interface Backdrop {
   image: HTMLImageElement | undefined;
 }
 
+/** A drag in progress, past the few pixels that still count as a click. */
+export interface Drag {
+  hit: Hit;
+  button: 0 | 2;
+  x: number; y: number;
+  cx: number; cy: number;
+}
+
+const LONG_PRESS_MS = 450;
+
 export class Screen {
   readonly ctx: CanvasRenderingContext2D;
   hits: Hit[] = [];
-  private hover: { x: number; y: number } | undefined;
-  private drag: { hit: Hit; x: number; y: number } | undefined;
+  private press: (Drag & { moved: boolean; timer?: number }) | undefined;
   /** Called before each redraw. */
   draw: (s: Screen) => void = () => {};
 
   constructor(readonly canvas: HTMLCanvasElement, private readonly backdrop: Backdrop) {
-    canvas.width = W;
-    canvas.height = H;
     this.ctx = canvas.getContext('2d')!;
-    this.ctx.imageSmoothingEnabled = false;
+    this.fitToDisplay();
+    window.addEventListener('resize', () => { this.fitToDisplay(); this.render(); });
+    canvas.style.touchAction = 'none';
     canvas.addEventListener('contextmenu', e => e.preventDefault());
-    canvas.addEventListener('mousedown', e => this.down(e));
-    canvas.addEventListener('mouseup', e => this.up(e));
-    canvas.addEventListener('mousemove', e => {
-      this.hover = this.point(e);
-      canvas.style.cursor = this.hitAt(this.hover.x, this.hover.y) ? 'pointer' : 'default';
-    });
+    canvas.addEventListener('pointerdown', e => this.down(e));
+    canvas.addEventListener('pointerup', e => this.up(e));
+    canvas.addEventListener('pointercancel', () => this.cancel());
+    canvas.addEventListener('pointermove', e => this.move(e));
+  }
+
+  /**
+   * Draws at a whole multiple of 640x480 close to the screen's real pixels, so
+   * the bitmap fonts and lines stay sharp instead of being stretched unevenly.
+   */
+  private fitToDisplay() {
+    const shown = this.canvas.getBoundingClientRect().width || W;
+    const k = Math.max(1, Math.min(4, Math.round((shown * (window.devicePixelRatio || 1)) / W)));
+    if (this.canvas.width !== W * k) {
+      this.canvas.width = W * k;
+      this.canvas.height = H * k;
+    }
+    this.ctx.setTransform(k, 0, 0, k, 0, 0);
+    this.ctx.imageSmoothingEnabled = false;
+  }
+
+  /** The drag being made, once it has moved far enough to be one. */
+  get dragging(): Drag | undefined {
+    return this.press?.moved ? this.press : undefined;
   }
 
   private point(e: MouseEvent) {
@@ -79,22 +110,54 @@ export class Screen {
     return undefined;
   }
 
-  private down(e: MouseEvent) {
+  private down(e: PointerEvent) {
     const p = this.point(e);
     const hit = this.hitAt(p.x, p.y);
-    if (!hit) return;
-    if (e.button === 2) { hit.onRightClick?.(); this.render(); return; }
-    if (e.button === 0) this.drag = { hit, ...p };
+    if (!hit || (e.button !== 0 && e.button !== 2)) return;
+    if (e.button === 2 && !hit.onRightDrop) { hit.onRightClick?.(); this.render(); return; }
+    this.canvas.setPointerCapture?.(e.pointerId);
+    this.press = { hit, button: e.button, x: p.x, y: p.y, cx: p.x, cy: p.y, moved: false };
+    // On a touch screen, holding a finger still stands in for the right button.
+    if (e.pointerType === 'touch' && (hit.onRightDrop || hit.onRightClick)) {
+      const press = this.press;
+      press.timer = window.setTimeout(() => {
+        if (this.press !== press || press.moved) return;
+        press.button = 2;
+        if (!hit.onRightDrop) { this.press = undefined; hit.onRightClick?.(); }
+        this.render();
+      }, LONG_PRESS_MS);
+    }
   }
 
-  private up(e: MouseEvent) {
-    const d = this.drag;
-    this.drag = undefined;
-    if (!d || e.button !== 0) return;
+  private move(e: PointerEvent) {
     const p = this.point(e);
-    const moved = Math.abs(p.x - d.x) + Math.abs(p.y - d.y) > 6;
-    if (moved && d.hit.onDrop) d.hit.onDrop(p.x, p.y);
-    else if (!moved) d.hit.onClick?.();
+    const d = this.press;
+    if (!d) {
+      this.canvas.style.cursor = this.hitAt(p.x, p.y) ? 'pointer' : 'default';
+      return;
+    }
+    d.cx = p.x; d.cy = p.y;
+    if (!d.moved && Math.abs(p.x - d.x) + Math.abs(p.y - d.y) > 6) { d.moved = true; window.clearTimeout(d.timer); }
+    if (d.moved && (d.button === 0 ? d.hit.onDrop : d.hit.onRightDrop)) this.render();
+  }
+
+  private cancel() {
+    if (this.press) window.clearTimeout(this.press.timer);
+    this.press = undefined;
+    this.render();
+  }
+
+  private up(e: PointerEvent) {
+    const d = this.press;
+    if (!d) return;
+    window.clearTimeout(d.timer);
+    this.press = undefined;
+    const p = this.point(e);
+    if (d.moved) {
+      if (d.button === 0) d.hit.onDrop?.(p.x, p.y);
+      else d.hit.onRightDrop?.(p.x, p.y);
+    } else if (d.button === 0) d.hit.onClick?.();
+    else d.hit.onRightClick?.();
     this.render();
   }
 
@@ -111,7 +174,11 @@ export class Screen {
     g.fillStyle = '#000';
     g.fillRect(0, 0, W, H);
     if (this.backdrop.image) {
+      // The photo is smoothed when scaled up; text and lines stay crisp.
+      g.imageSmoothingEnabled = true;
+      g.imageSmoothingQuality = 'high';
       g.drawImage(this.backdrop.image, 0, 0, W, H);
+      g.imageSmoothingEnabled = false;
       g.fillStyle = 'rgba(0,0,0,0.45)';
       g.fillRect(0, 0, W, H);
     }
