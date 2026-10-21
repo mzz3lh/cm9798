@@ -2,7 +2,7 @@
 // backdrop, grey bevelled buttons and the original bitmap fonts. Pick your
 // club and an opponent, set the team on the squad and tactics screens, then
 // play the match with its one-line commentary bar. Return pauses, space
-// switches between normal and fast, and half time stops on the match info
+// cycles slow, normal and fast, and half time stops on the match info
 // screens, where the tactics screen makes substitutions.
 
 import { DEMO_TEAMS } from '../data/squads';
@@ -20,7 +20,9 @@ import { C, Screen, W, darken, lighten } from './retro/screen';
 // ------------------------------------------------------------------ state
 
 const BENCH_SIZE = 9;
-const SPEEDS = { normal: 1300, fast: 350 };
+const SPEEDS = { slow: 1300, normal: 825, fast: 350 };
+const SPEED_ORDER = ['slow', 'normal', 'fast'] as const;
+const nextSpeed = () => SPEED_ORDER[(SPEED_ORDER.indexOf(speed) + 1) % SPEED_ORDER.length];
 const DEFAULT_TACTIC: Tactic = { formation: '4-4-2', mentality: 0, passing: 'mixed', pressing: 'mid', width: 'normal', counterAttack: false, offsideTrap: false };
 
 type View =
@@ -219,7 +221,7 @@ function drawMenu(s: Screen) {
   s.tile('Opposition\nSquad', 456, 158, 130, 108, () => { view = { kind: 'squad', team: 'theirs' }; });
   s.tile('Change\nClubs', 122, 272, 130, 108, () => { view = { kind: 'pickTeam', forOpponent: false, page: 0 }; });
   s.tile(atHome ? 'Play\nAway' : 'Play\nAt Home', 256, 272, 130, 108, () => { atHome = !atHome; });
-  s.tile(`Speed:\n${speed === 'fast' ? 'Fast' : 'Normal'}`, 390, 272, 130, 108, () => { speed = speed === 'fast' ? 'normal' : 'fast'; });
+  s.tile(`Speed:\n${cap(speed)}`, 390, 272, 130, 108, () => { speed = nextSpeed(); });
   s.doneBar('Please Select');
 }
 
@@ -307,14 +309,10 @@ function handlePick(p: { row: number } | { bench: string }) {
         row.sub = { id: benchId, spot: row.spot, runTo: row.runTo };
       }
     } else {
-      // Before the match, a player brought into the team goes where his profile says he plays.
-      const taken = new Set(plan.rows.filter(r => r !== row).map(r => placeOf(r).spot));
-      const [spot] = spotsFor([incoming.positions[0]], taken);
+      // Before the match too, the player brought in takes the other's place and runs.
       const i = plan.bench.indexOf(incoming);
       plan.bench[i] = row.player;
       row.player = incoming;
-      row.spot = spot;
-      row.runTo = undefined;
     }
   }
 }
@@ -598,8 +596,8 @@ function drawTactics(s: Screen, readOnly = false) {
     const slot = r ? positionOf(r.spot) : undefined;
     const colour = i < 11 ? (slot && !r!.player.positions.includes(slot) ? C.gold : C.white) : '#9a9a9a';
     s.text(fit(e.player.name, 150, 'MY2'), 46, y, { font: 'MY2', colour });
-    if (slot) s.text(slot, 206, y, { font: 'MY1', colour: C.gold });
-    if (goingOn) s.text(positionOf(goingOn.sub!.spot), 206, y, { font: 'MY1', colour: C.yellow });
+    // Each player's positions from his profile, substitutes included, as on the squad screen.
+    s.text(fit(positionCode(e.player), 40, 'MY1'), 198, y + 1, { font: 'MY1', colour: goingOn ? C.yellow : C.gold });
     if (inMatch && r) {
       const cond = Math.round(match!.sides[side].pitch.find(o => o.player.id === r.player.id)?.condition ?? 100);
       s.text(`${cond}%`, 240, y + 1, { font: 'MY1', colour: cond < 70 ? C.orange : C.cyan });
@@ -1124,12 +1122,12 @@ screen.draw = s => {
   }
 };
 
-// Space switches between normal and fast; Return pauses and continues.
+// Space cycles slow, normal and fast; Return pauses and continues.
 document.addEventListener('keydown', e => {
   if (view.kind !== 'match' || !match || match.finished) return;
   if (e.key === ' ') {
     e.preventDefault();
-    speed = speed === 'fast' ? 'normal' : 'fast';
+    speed = nextSpeed();
     if (!paused) tick();
   } else if (e.key === 'Enter') {
     e.preventDefault();
