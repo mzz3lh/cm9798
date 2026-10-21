@@ -1,5 +1,5 @@
 import { FORMATIONS, familiarity } from './formations';
-import type { FormationName, Lineup, Player, Team } from './types';
+import type { FormationName, Lineup, Player, Takers, Team } from './types';
 
 /**
  * Picks the strongest eleven for a formation: each slot takes the best
@@ -33,4 +33,16 @@ export function autoLineup(team: Team, formation: FormationName, unavailable: Se
   const keeper = rest.find(p => p.positions[0] === 'GK');
   const bench = [...(keeper ? [keeper] : []), ...rest.filter(p => p !== keeper)].slice(0, 9);
   return { starters, bench };
+}
+
+/** Sensible first picks: the most influential captain, the best dead-ball men on the set pieces. */
+export function defaultTakers(starters: Player[]): Takers {
+  const best = (f: (p: Player) => number) => [...starters].filter(p => p.positions[0] !== 'GK').sort((a, b) => f(b) - f(a))[0]?.id;
+  const a = (p: Player) => p.attributes;
+  return {
+    captain: best(p => a(p).influence * 2 + a(p).determination),
+    corners: best(p => a(p).setPieces * 2 + a(p).passing),
+    freeKicks: best(p => a(p).setPieces * 2 + a(p).shooting),
+    penalties: best(p => a(p).setPieces + a(p).composure + a(p).shooting),
+  };
 }

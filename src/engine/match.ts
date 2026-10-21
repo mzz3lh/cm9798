@@ -98,7 +98,7 @@ export class Match {
       const big = ((player.attributes.bigOccasion - 10) / 200) * imp;
       const form = clamp(this.rng.normal(1, spread * 0.6) + big, 0.8, 1.15);
       this.registerPlayer(player, side);
-      return { player, slot: slots[i], run: setup.lineup.runs?.[player.id] ?? 'normal', condition: 100, form, yellow: 0, treatment: 0 };
+      return { player, slot: slots[i], run: setup.lineup.runs?.[player.id] ?? 'normal', condition: setup.lineup.fitness?.[player.id] ?? 100, form, yellow: 0, treatment: 0 };
     });
     return {
       setup,
@@ -275,7 +275,7 @@ export class Match {
     const on = s.bench.find(p => p.id === onId);
     if (idx < 0 || !on) return 'Player not found.';
     const off = s.pitch[idx];
-    s.pitch[idx] = { player: on, slot: off.slot, run: 'normal', condition: 100, form: clamp(this.rng.normal(1, 0.06), 0.85, 1.12), yellow: 0, treatment: 0 };
+    s.pitch[idx] = { player: on, slot: off.slot, run: 'normal', condition: s.setup.lineup.fitness?.[on.id] ?? 100, form: clamp(this.rng.normal(1, 0.06), 0.85, 1.12), yellow: 0, treatment: 0 };
     s.bench = s.bench.filter(p => p.id !== onId);
     s.used.add(on.id);
     this.registerPlayer(on, side);
@@ -553,7 +553,7 @@ export class Match {
     const gk = keeper
       ? (this.eff(keeper, 'tackling') * 0.5 + this.eff(keeper, 'handling') * 0.25 + this.eff(keeper, 'positioning') * 0.25) / 0.62
       : 0.3;
-    const pGoal = clamp(xg * clamp(finish, 0.6, 1.6) ** 0.9 / clamp(gk, 0.5, 1.6) ** 0.8, 0.005, 0.95);
+    const pGoal = clamp(0.93 * xg * clamp(finish, 0.6, 1.6) ** 0.9 / clamp(gk, 0.5, 1.6) ** 0.8, 0.005, 0.95);
     const pOnTarget = clamp(0.3 + 0.22 * (finish - 1) + xg * 0.6, 0.15, 0.9);
     const blockedP = kind === 'long' ? 0.32 : kind === 'pen' ? 0 : this.mentality(oppSide) === -2 ? 0.34 : 0.24;
 

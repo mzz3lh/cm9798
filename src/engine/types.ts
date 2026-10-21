@@ -106,6 +106,8 @@ export interface Lineup {
   runs?: Record<string, Run>;
   /** Optional captain and set-piece takers, by player id. */
   takers?: Takers;
+  /** Optional physical condition (0-100) per player id going into the match; anyone missing starts at 100. */
+  fitness?: Record<string, number>;
 }
 
 /** The captain and set-piece takers picked on the tactics screen; one player can do them all. */
