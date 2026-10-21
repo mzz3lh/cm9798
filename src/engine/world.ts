@@ -7,7 +7,7 @@ import { FA_CUP_ROUNDS, LEAGUE_CUP_ROUNDS, LEAGUE_DATES, SEASON, type CupRoundDe
 import { marketWage, playerValue, yearsLeft } from './economy';
 import { FORMATIONS, familiarity } from './formations';
 import { Rng, hashString } from './rng';
-import type { FormationName, Player, Tactic, Team } from './types';
+import type { FormationName, Player, Tactic, Takers, Team } from './types';
 
 export type Division = 'PL' | 'CH' | 'L1';
 export type CompId = 'PL' | 'LC' | 'FAC';
@@ -153,6 +153,13 @@ export interface TransferRecord {
   fee: number;
 }
 
+export interface TeamSheet {
+  tactic: Tactic;
+  rows: { id: string; spot: number; runTo?: number }[];
+  bench: string[];
+  takers: Takers;
+}
+
 export interface GameState {
   version: 1;
   seed: number;
@@ -169,6 +176,8 @@ export interface GameState {
   transfers: TransferRecord[];
   /** Board confidence, 0-100. */
   board: number;
+  /** The human's team sheet between matches: tactic, players by shirt number with their pitch spots, subs, takers. */
+  sheet?: TeamSheet;
   nextId: number;
   over?: boolean;
 }

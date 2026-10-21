@@ -74,8 +74,11 @@ function cp1252(ch: string): number {
   if (extra[c]) return extra[c];
   if (c < 256) return c;
   // Letters with marks the font lacks lose the mark, e.g. "ć" becomes "c".
-  const plain = ch.normalize('NFD').replace(/[̀-ͯ]/g, '');
-  return plain.charCodeAt(0) < 256 ? plain.charCodeAt(0) : 63;
+  const plain = ch.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  if (plain.charCodeAt(0) < 256) return plain.charCodeAt(0);
+  // Letters that don't break down that way: "Đorđe" becomes "Dorde".
+  const like: Record<string, string> = { 'Đ': 'D', 'đ': 'd', 'Ł': 'L', 'ł': 'l', 'ı': 'i', 'Ħ': 'H', 'ħ': 'h' };
+  return like[ch] ? cp1252(like[ch]) : 63;
 }
 
 function atlas(f: LoadedFont, colour: string) {

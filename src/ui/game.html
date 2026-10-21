@@ -1,0 +1,18 @@
+<meta charset="utf-8">
+<title>Championship Manager 97/98</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+/* One 640x480 screen, scaled up to fit. The canvas draws at a whole multiple
+   of 640x480, so the browser only has to shrink it a little. */
+:root { color-scheme: dark; }
+html, body { margin: 0; height: 100%; background: #000; }
+body { display: grid; place-items: center; }
+#screen {
+  display: block;
+  width: min(100vw, calc(100vh * 4 / 3));
+  height: auto;
+  aspect-ratio: 4 / 3;
+  background: #000;
+}
+</style>
+<canvas id="screen" width="640" height="480" aria-label="Championship Manager 97/98"></canvas>

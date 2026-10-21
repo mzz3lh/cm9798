@@ -6,6 +6,8 @@
     "typecheck": "tsc -p .",
     "balance": "tsx scripts/balance.ts 5",
     "tactics": "tsx scripts/tactics.ts",
+    "season": "tsx scripts/season.ts",
+    "build": "node scripts/build-demo.mjs",
     "build:demo": "node scripts/build-demo.mjs"
   },
   "devDependencies": {
