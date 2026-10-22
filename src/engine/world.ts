@@ -7,7 +7,7 @@ import { FA_CUP_ROUNDS, LEAGUE_CUP_ROUNDS, LEAGUE_DATES, SEASON, type CupRoundDe
 import { marketWage, playerValue, yearsLeft } from './economy';
 import { FORMATIONS, familiarity } from './formations';
 import { Rng, hashString } from './rng';
-import type { FormationName, Player, Tactic, Takers, Team } from './types';
+import type { FormationName, MatchEventType, Player, Tactic, Takers, Team, TeamMatchStats } from './types';
 
 export type Division = 'PL' | 'CH' | 'L1';
 export type CompId = 'PL' | 'LC' | 'FAC';
@@ -73,6 +73,22 @@ export interface FixtureResult {
   scorers: { id: string; side: 0 | 1; goals: number }[];
   motm?: string;
   attendance: number;
+  /** What the match info screens show for it afterwards. */
+  report?: MatchReport;
+}
+
+/** Each player's match stats, packed in this order to keep saves small. */
+export const REPORT_FIELDS = ['minutes', 'goals', 'assists', 'shots', 'onTarget', 'keyPasses', 'tackles', 'saves', 'yellow', 'red', 'injured', 'rating'] as const;
+
+/** A played match, kept so its match info screens can be opened later. */
+export interface MatchReport {
+  stats: [TeamMatchStats, TeamMatchStats];
+  /** Player ids by shirt number: the starters, then the substitutes. */
+  squads: [string[], string[]];
+  /** Stats for those who played, as REPORT_FIELDS; the rating is times ten. */
+  players: Record<string, number[]>;
+  /** Goals, cards, substitutions and injuries. */
+  events: { clock: string; type: MatchEventType; side?: 0 | 1; text: string }[];
 }
 
 export interface Fixture {

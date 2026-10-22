@@ -53,6 +53,7 @@ interface SideState {
 }
 
 const SUB_LIMIT = 5;
+const INCIDENTS = new Set<MatchEventType>(['goal', 'yellow', 'red', 'sub', 'injury', 'penalty', 'disallowed']);
 const WINDOW_LIMIT = 3;
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
@@ -202,7 +203,8 @@ export class Match {
   }
 
   private say(type: MatchEventType, text: string, importance: 0 | 1 | 2, side?: 0 | 1) {
-    if (!this.options.commentary && importance < 2 && type !== 'goal') return;
+    // Without commentary only the incidents are kept, for the match report.
+    if (!this.options.commentary && importance < 2 && !INCIDENTS.has(type)) return;
     this.events.push({ minute: this.minute, clock: this.displayMinute, type, side, text, importance });
   }
 

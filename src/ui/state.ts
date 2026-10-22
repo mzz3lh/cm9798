@@ -38,6 +38,8 @@ export type View =
   | { kind: 'match' }
   | { kind: 'info'; tab: InfoTab }
   | { kind: 'result' }
+  /** The match info screens for a match already played. */
+  | { kind: 'report'; fixtureId: string; tab: InfoTab; back: View }
   | { kind: 'dayResults'; page: number }
   | { kind: 'over' };
 

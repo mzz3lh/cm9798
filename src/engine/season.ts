@@ -12,8 +12,8 @@ import type { Rng } from './rng';
 import { transferDay } from './transfers';
 import type { Lineup, Player, Tactic, Team } from './types';
 import {
-  addNews, unreadNews, COMP_NAMES, DIVISION_TAGS, newId, playerById, rngFor, wageBill,
-  type CompId, type Cup, type Fixture, type FixtureResult, type GameState,
+  addNews, unreadNews, COMP_NAMES, DIVISION_TAGS, REPORT_FIELDS, newId, playerById, rngFor, wageBill,
+  type CompId, type Cup, type Fixture, type FixtureResult, type GameState, type MatchReport,
 } from './world';
 
 export { addNews, unreadNews };
@@ -175,6 +175,23 @@ export function tieWinner(g: GameState, fx: Fixture): string | undefined {
  * Records a finished match: the result, extra time and penalties for a
  * drawn cup tie, player stats, condition, injuries, bans and gate money.
  */
+const INCIDENTS = new Set(['goal', 'yellow', 'red', 'sub', 'injury', 'penalty', 'disallowed']);
+
+function reportOf(m: Match): MatchReport {
+  const players: Record<string, number[]> = {};
+  for (const [id, st] of m.playerStats) {
+    if (st.minutes === 0) continue;
+    players[id] = REPORT_FIELDS.map(f => (f === 'rating' ? Math.round(st.rating * 10) : Number(st[f])));
+  }
+  const squad = (side: 0 | 1) => [...m.sides[side].setup.lineup.starters, ...m.sides[side].setup.lineup.bench].map(p => p.id);
+  return {
+    stats: [{ ...m.sides[0].stats, xg: Math.round(m.sides[0].stats.xg * 10) / 10 }, { ...m.sides[1].stats, xg: Math.round(m.sides[1].stats.xg * 10) / 10 }],
+    squads: [squad(0), squad(1)],
+    players,
+    events: m.events.filter(e => INCIDENTS.has(e.type)).map(e => ({ clock: e.clock, type: e.type, side: e.side, text: e.text })),
+  };
+}
+
 export function recordMatch(g: GameState, fx: Fixture, m: Match): FixtureResult {
   const r: MatchResult = m.result();
   const rng = rngFor(g, 'after', fx.id);
@@ -183,6 +200,7 @@ export function recordMatch(g: GameState, fx: Fixture, m: Match): FixtureResult 
     scorers: r.players.filter(p => p.goals > 0).map(p => ({ id: p.playerId, side: p.side, goals: p.goals })),
     motm: r.manOfTheMatch?.playerId,
     attendance: 0,
+    report: reportOf(m),
   };
   fx.result = result;
   if (fx.comp !== 'PL' && (!fx.tie || fx.leg === 2) && !tieWinner(g, fx)) {

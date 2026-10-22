@@ -14,9 +14,9 @@ import { askingPrice, openTalks, startRenewal, toggleListed } from '../engine/tr
 import {
   MENTALITY_NAMES,
   type FormationName, type MatchEvent, type Mentality, type Player, type Position, type Run,
-  type Tactic, type Takers, type Team,
+  type PlayerMatchStats, type Tactic, type Takers, type Team, type TeamMatchStats,
 } from '../engine/types';
-import { COMP_NAMES, valueOf, type Fixture, type GameState } from '../engine/world';
+import { COMP_NAMES, playerById, valueOf, type Fixture, type GameState } from '../engine/world';
 import { cap, dateTag, listName, positionCode, sortSquad, statusTag, tagBox, teamBar as clubBar } from './common';
 import { autosaveNow } from './flow';
 import { fit, textWidth } from './retro/fonts';
@@ -54,6 +54,31 @@ function passTakers(takers: Takers, from: string, to: string) {
   for (const r of ROLES) if (takers[r.key] === from) takers[r.key] = to;
 }
 
+/** What the score bars and match info screens read: a live match, or a played one's report. */
+export interface MatchView {
+  sides: readonly {
+    setup: { team: Team; lineup: { starters: Player[]; bench: Player[] } };
+    stats: TeamMatchStats;
+    pitch: readonly { player: Player; condition: number }[];
+  }[];
+  events: readonly ViewEvent[];
+  playerStats: ReadonlyMap<string, PlayerMatchStats>;
+  finished: boolean;
+  atHalfTime: boolean;
+  result(): { motmPlayer?: Player };
+}
+type ViewEvent = Pick<MatchEvent, 'clock' | 'type' | 'side' | 'text'>;
+
+const mv = (): MatchView => report ?? match!;
+
+/** The events shown so far, and the goals in them. */
+function eventsSoFar(m: MatchView): readonly ViewEvent[] {
+  return m === match && shown ? m.events.slice(0, shown.events) : m.events;
+}
+function goalsSoFar(m: MatchView, side: 0 | 1): number {
+  return m === match && shown ? eventsSoFar(m).filter(e => e.type === 'goal' && e.side === side).length : m.sides[side].stats.goals;
+}
+
 let plan: Plan;
 let undo: string | undefined;
 let match: Match | undefined;
@@ -63,7 +88,15 @@ let mySide: 0 | 1 = 0;
 let speed: keyof typeof SPEEDS = 'normal';
 let paused = false;
 let timer: number | undefined;
-let queue: MatchEvent[] = [];
+let queue: { ev: MatchEvent; index: number }[] = [];
+/**
+ * How far the watched match has got on screen: the clock stands still while a
+ * move's lines are shown, as in the original, and goals count once shown.
+ * Undefined when everything so far is shown (paused, half time, full time).
+ */
+let shown: { clock: string; events: number } | undefined;
+/** A finished match opened from a results list, drawn in place of the live one. */
+let report: MatchView | undefined;
 /** The commentary line on screen, and whose colour it takes. */
 let line: { text: string; side?: 0 | 1; type?: string } | undefined;
 /** A player picked for a swap: a starter's row or a bench player. */
@@ -93,6 +126,7 @@ export function resetMatchday() {
   plan = undefined as unknown as Plan;
   match = undefined;
   fixture = undefined;
+  shown = undefined;
   layout = new Map();
 }
 
@@ -214,7 +248,7 @@ function ensurePlanIfNeeded() {
 // ------------------------------------------------------------------ shared pieces
 
 function scoreBars(s: Screen) {
-  const [h, a] = match!.sides;
+  const [h, a] = mv().sides;
   const bar = (t: Team, goals: number, x: number) => {
     const { bg, fg } = teamBar(t);
     s.rect(x, 4, 318, 50, '#000');
@@ -226,13 +260,13 @@ function scoreBars(s: Screen) {
     s.rect(x + 266, 11, 44, 36, C.white);
     s.text(String(goals), x + 288, 13, { font: 'MY7', colour: '#000', align: 'center', shadow: false });
   };
-  bar(h.setup.team, h.stats.goals, 0);
-  bar(a.setup.team, a.stats.goals, 320);
+  bar(h.setup.team, goalsSoFar(mv(), 0), 0);
+  bar(a.setup.team, goalsSoFar(mv(), 1), 320);
   dateTag(s);
 }
 
 function matchClock(): string {
-  const m = match!;
+  const m = mv();
   return m.finished ? `${m.sides[0].stats.goals}:${m.sides[1].stats.goals} FT` : m.atHalfTime ? `${m.sides[0].stats.goals}:${m.sides[1].stats.goals} HT` : '';
 }
 
@@ -967,6 +1001,7 @@ function kickOff() {
   };
   match = createMatch(g, fx, mine, true);
   recorded = false;
+  shown = undefined;
   queue = [];
   line = undefined;
   paused = true;
@@ -980,7 +1015,7 @@ export function drawMatch(s: Screen) {
   const clock = matchClock();
   if (clock) s.tag(clock, 4, 58, 'left');
   s.tag(compName(), W - 4, 58);
-  if (m.minute > 0 && !m.atHalfTime && !m.finished) s.text(m.displayMinute.replace(/'$/, ''), W / 2, 56, { font: 'MY7', colour: C.yellow, align: 'center' });
+  if (m.minute > 0 && !m.atHalfTime && !m.finished) s.text((shown?.clock ?? m.displayMinute).replace(/'$/, ''), W / 2, 56, { font: 'MY7', colour: C.yellow, align: 'center' });
   s.panel(20, 90, 600, 310);
   const running = m.minute > 0 && !paused && !m.finished && !m.atHalfTime;
   if (running) {
@@ -1015,20 +1050,23 @@ export function drawMatch(s: Screen) {
 /** Stops the match and shows the match info screens, where the tactics screen makes changes. */
 function pauseToInfo() {
   pause();
+  // The rest of the move is skipped, so the score and stats agree on the info screens.
+  queue = [];
+  shown = undefined;
   go({ kind: 'info', tab: 'ratings' });
 }
 
 function scorerRows() {
-  const goals = match!.events.filter(e => e.type === 'goal');
+  const goals = eventsSoFar(mv()).filter(e => e.type === 'goal');
   return Math.max(goals.filter(e => e.side === 0).length, goals.filter(e => e.side === 1).length);
 }
 
 /** Goal scorers under each team, with the minutes, as the original listed them. */
 function drawScorers(s: Screen, y: number) {
-  const m = match!;
+  const m = mv();
   for (const side of [0, 1] as const) {
     const byName = new Map<string, { player?: Player; mins: string[] }>();
-    for (const e of m.events) {
+    for (const e of eventsSoFar(m)) {
       if (e.type !== 'goal' || e.side !== side) continue;
       const p = scorer(e);
       const name = p?.shortName ?? 'Goal';
@@ -1043,15 +1081,15 @@ function drawScorers(s: Screen, y: number) {
   }
 }
 
-function scorer(e: MatchEvent): Player | undefined {
-  const m = match!;
+function scorer(e: ViewEvent): Player | undefined {
+  const m = mv();
   const squad = [...m.sides[e.side!].setup.lineup.starters, ...m.sides[e.side!].setup.lineup.bench];
   // The goal text names the scorer; pick the longest short name it contains.
   return squad.filter(p => e.text.includes(p.shortName)).sort((a, b) => b.shortName.length - a.shortName.length)[0];
 }
 
 function drawCommentary(s: Screen, l: NonNullable<typeof line>) {
-  const m = match!;
+  const m = mv();
   const goal = l.type === 'goal';
   const team = l.side !== undefined ? m.sides[l.side].setup.team : undefined;
   const colours = team ? teamBar(team) : { bg: C.grey, fg: C.white };
@@ -1092,15 +1130,26 @@ function tick() {
   if (!m || paused) return;
   stop();
   if (queue.length === 0) {
-    if (m.finished) { paused = true; ui.screen.render(); return; }
-    queue = m.step().filter(e => e.importance > 0 || e.type === 'build' || e.type === 'chance');
-    if (queue.length === 0) { ui.screen.render(); timer = window.setTimeout(tick, SPEEDS[speed] * 0.35); return; }
+    if (m.finished) { paused = true; shown = undefined; ui.screen.render(); return; }
+    const from = m.events.length;
+    queue = m.step().map((ev, i) => ({ ev, index: from + i }))
+      .filter(({ ev }) => ev.importance > 0 || ev.type === 'build' || ev.type === 'chance');
+    if (queue.length === 0) {
+      // A quiet minute: the clock runs on.
+      shown = { clock: m.displayMinute, events: m.events.length };
+      ui.screen.render();
+      timer = window.setTimeout(tick, SPEEDS[speed] * 0.35);
+      return;
+    }
   }
-  const ev = queue.shift()!;
+  // A move: the clock stands at its minute while its lines are read.
+  const { ev, index } = queue.shift()!;
+  shown = { clock: ev.clock, events: index + 1 };
   line = { text: ev.text, side: ev.side, type: ev.type };
   ui.screen.render();
   if (ev.type === 'halftime' || ev.type === 'fulltime') {
     queue = [];
+    shown = undefined;
     paused = true;
     // The original stops on the match info screens at half and full time.
     timer = window.setTimeout(() => { if (ui.view.kind === 'match') go({ kind: 'info', tab: 'ratings' }); ui.screen.render(); }, SPEEDS[speed] * 1.5);
@@ -1128,6 +1177,72 @@ export function matchKey(e: KeyboardEvent): boolean {
 
 // ------------------------------------------------------------------ match info (half and full time, paused)
 
+/** The match info page for a tab, and the row of tab buttons under it. */
+function drawInfoTabs(s: Screen, tab: InfoTab, open: (tab: InfoTab) => void) {
+  const [h, a] = mv().sides;
+  s.panel(20, 88, 600, 314);
+  if (tab === 'ratings') drawRatings(s);
+  else if (tab === 'stats') drawMatchStats(s);
+  else if (tab === 'incidents') drawIncidents(s);
+  else drawPlayerStats(s, tab === 'homeStats' ? 0 : 1);
+  const tabs: [string, InfoTab][] = [
+    [`${h.setup.team.shortName}\nPlayer Stats`, 'homeStats'], ['Match\nIncidents', 'incidents'], ['Match\nStats', 'stats'],
+    ['Player\nRatings', 'ratings'], [`${a.setup.team.shortName}\nPlayer Stats`, 'awayStats'],
+  ];
+  tabs.forEach(([t, k], i) => s.button(t, 10 + i * 124, 414, 122, 30, () => open(k), { active: k === tab }));
+}
+
+/** A played match's report, rebuilt into the shape the match info screens read. */
+function reportView(g: GameState, fx: Fixture): MatchView | undefined {
+  const r = fx.result?.report;
+  if (!r) return undefined;
+  const playerStats = new Map<string, PlayerMatchStats>();
+  const sides = ([0, 1] as const).map(side => {
+    const players = r.squads[side].map(id => playerById(g, id)).filter((p): p is Player => !!p);
+    for (const p of players) {
+      const v = r.players[p.id];
+      if (!v) continue;
+      // In the order of REPORT_FIELDS.
+      const [minutes, goals, assists, shots, onTarget, keyPasses, tackles, saves, yellow, red, injured, rating] = v;
+      playerStats.set(p.id, {
+        playerId: p.id, side, minutes, goals, assists, shots, onTarget, keyPasses, tackles, saves, yellow,
+        red: !!red, injured: !!injured, rating: rating / 10,
+      });
+    }
+    const team = g.teams[side === 0 ? fx.home : fx.away];
+    return { setup: { team, lineup: { starters: players.slice(0, 11), bench: players.slice(11) } }, stats: r.stats[side], pitch: [] };
+  });
+  const motm = fx.result!.motm ? playerById(g, fx.result!.motm) : undefined;
+  return { sides, events: r.events, playerStats, finished: true, atHalfTime: false, result: () => ({ motmPlayer: motm }) };
+}
+
+/** The match info screens for any played match, opened from a results list. */
+export function drawReport(s: Screen, v: Extract<View, { kind: 'report' }>) {
+  const g = game();
+  const fx = g.fixtures.find(f => f.id === v.fixtureId);
+  const view = fx && reportView(g, fx);
+  s.background();
+  if (!fx || !view) {
+    s.titleBar('Match Info');
+    s.text('There is no match report for this game.', W / 2, 220, { font: 'MY4', colour: C.text, align: 'center' });
+    s.doneBar('Done', () => go(v.back));
+    return;
+  }
+  const live = { fixture, report };
+  report = view;
+  fixture = fx;
+  try {
+    scoreBars(s);
+    const where = fx.neutral ? 'Wembley Stadium' : g.teams[fx.home].stadium;
+    s.tag(`${compName()}${fx.comp === 'PL' ? '' : ` ${fx.round}`} From ${where} - Full Time`, 4, 58, 'left');
+    s.tag(fx.result!.et ? scoreLine(g, fx) : matchClock(), W - 4, 58);
+    drawInfoTabs(s, v.tab, k => { v.tab = k; });
+    s.doneBar('Done', () => go(v.back));
+  } finally {
+    ({ fixture, report } = live);
+  }
+}
+
 export function drawInfo(s: Screen, tab: InfoTab) {
   const m = match!;
   s.background();
@@ -1137,17 +1252,7 @@ export function drawInfo(s: Screen, tab: InfoTab) {
   s.tag(`${compName()} From ${fixture?.neutral ? 'Wembley Stadium' : h.setup.team.stadium} - ${when}`, 4, 58, 'left');
   const clock = matchClock();
   if (clock) s.tag(clock, W - 4, 58);
-  s.panel(20, 88, 600, 314);
-  if (tab === 'ratings') drawRatings(s);
-  else if (tab === 'stats') drawMatchStats(s);
-  else if (tab === 'incidents') drawIncidents(s);
-  else drawPlayerStats(s, tab === 'homeStats' ? 0 : 1);
-
-  const tabs: [string, InfoTab][] = [
-    [`${h.setup.team.shortName}\nPlayer Stats`, 'homeStats'], ['Match\nIncidents', 'incidents'], ['Match\nStats', 'stats'],
-    ['Player\nRatings', 'ratings'], [`${a.setup.team.shortName}\nPlayer Stats`, 'awayStats'],
-  ];
-  tabs.forEach(([t, k], i) => s.button(t, 10 + i * 124, 414, 122, 30, () => go({ kind: 'info', tab: k }), { active: k === tab }));
+  drawInfoTabs(s, tab, k => go({ kind: 'info', tab: k }));
   const myTactics = () => { plan = planFromMatch(); undo = snapshot(); picked = undefined; go({ kind: 'tactics' }); };
   const theirTactics = () => { picked = undefined; go({ kind: 'tactics', theirs: true, back: { kind: 'info', tab } }); };
   const tacticsButton = (side: 0 | 1, x: number) => s.button(`${m.sides[side].setup.team.shortName}\nTactics`, x, 446, 122, 30,
@@ -1185,14 +1290,14 @@ function applyPlan() {
 }
 
 function sideList(side: 0 | 1) {
-  const s = match!.sides[side];
+  const s = mv().sides[side];
   const starters = s.setup.lineup.starters, bench = s.setup.lineup.bench;
   return [...starters, ...bench];
 }
 
 function drawRatings(s: Screen) {
-  const m = match!;
-  const motm = m.finished ? m.result().motmPlayer.id : undefined;
+  const m = mv();
+  const motm = m.finished ? m.result().motmPlayer?.id : undefined;
   for (const side of [0, 1] as const) {
     const x = side === 0 ? 22 : 330;
     const onPitch = new Set(m.sides[side].pitch.map(o => o.player.id));
@@ -1215,7 +1320,7 @@ function drawRatings(s: Screen) {
 }
 
 function drawMatchStats(s: Screen) {
-  const [h, a] = match!.sides;
+  const [h, a] = mv().sides;
   const poss = (x: typeof h) => Math.round((100 * x.stats.possessionMinutes) / Math.max(1, h.stats.possessionMinutes + a.stats.possessionMinutes));
   const rows: [string, number | string, number | string][] = [
     ['Shots on goal', h.stats.shots, a.stats.shots],
@@ -1237,7 +1342,7 @@ function drawMatchStats(s: Screen) {
 }
 
 function drawIncidents(s: Screen) {
-  const m = match!;
+  const m = mv();
   drawScorers(s, 94);
   const rows = scorerRows();
   let y = 94 + Math.max(1, rows) * 18 + 8;
@@ -1255,8 +1360,8 @@ function drawIncidents(s: Screen) {
 }
 
 function drawPlayerStats(s: Screen, side: 0 | 1) {
-  const m = match!;
-  const cols: [string, (st: ReturnType<typeof m.playerStats.get> & object) => string][] = [
+  const m = mv();
+  const cols: [string, (st: PlayerMatchStats) => string][] = [
     ['Sh', st => String(st.shots)], ['On', st => String(st.onTarget)], ['Gls', st => String(st.goals)], ['Ast', st => String(st.assists)],
     ['Key', st => String(st.keyPasses)], ['Tck', st => String(st.tackles)], ['Sav', st => String(st.saves)], ['Min', st => String(st.minutes)],
   ];

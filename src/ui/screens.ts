@@ -245,7 +245,7 @@ export function drawTable(s: Screen, v: Extract<View, { kind: 'table' }>) {
     s.blueBox(String(i + 1), 14, y, 30, 17, { font: 'MY2' });
     const name = g.teams[r.clubId].name;
     s.text(name, 52, y, { font: 'MY3', colour: me ? C.yellow : C.white });
-    s.area(52, y, 290, 18, { onClick: () => go({ kind: 'squad', teamId: r.clubId, mode: 'positions', back: v }) });
+    s.area(14, y, 612, 18, { onClick: () => go({ kind: 'squad', teamId: r.clubId, mode: 'positions', back: v }) });
     [r.p, r.w, r.d, r.l, r.f, r.a, r.pts].forEach((n, k) => s.text(String(n), 372 + k * 38, y + 2, { font: 'MY2', colour: k === 6 ? C.yellow : C.cyan, align: 'center' }));
     // Champions League places and the drop, as lines under the rows.
     if (i === 3 || i === 16) s.rect(14, y + 17, 612, 1, i === 3 ? C.cyan : C.orange);
@@ -277,6 +277,7 @@ export function drawFixtures(s: Screen, v: Extract<View, { kind: 'fixtures' }>) 
       const won = mine > theirs || (mine === theirs && f.result.pens && (home ? f.result.pens[0] > f.result.pens[1] : f.result.pens[1] > f.result.pens[0]));
       const colour = won ? C.yellow : mine === theirs && !f.result.pens ? C.text : C.orange;
       s.text(fit(line, 100, 'MY2'), 622, y + 2, { font: 'MY2', colour, align: 'right' });
+      s.area(522, y, 104, 20, { onClick: () => openReport(f, v) });
     }
     s.area(152, y, 230, 20, { onClick: () => go({ kind: 'squad', teamId: opp.id, mode: 'positions', back: v }) });
   });
@@ -314,7 +315,15 @@ export function drawCup(s: Screen, v: Extract<View, { kind: 'cup' }>) {
     s.text(fit(name(f.away), w / 2 - 70, font), mid + 44, y, { font, colour: hl(f.away) });
     const score = (fx: Fixture | undefined) => (fx?.result ? scoreLine(g, fx).replace(' pens', 'p') : '');
     const res = [score(f), score(leg2)].filter(Boolean).join(', ');
-    if (res) s.text(fit(res, wide ? 120 : 60, 'MY1'), wide ? x + w - 2 : x + w - 2, y + 3, { font: 'MY1', colour: C.gold, align: 'right' });
+    if (res) {
+      s.text(fit(res, wide ? 120 : 60, 'MY1'), x + w - 2, y + 3, { font: 'MY1', colour: C.gold, align: 'right' });
+      // Each leg's score opens its match info; the second leg's sits after the comma.
+      const legs = [f, leg2].filter((x): x is Fixture => !!x?.result);
+      const span = wide ? 120 : 60;
+      legs.forEach((leg, k) => s.area(x + w - span + (k * span) / legs.length, y, span / legs.length, 19, { onClick: () => openReport(leg, v) }));
+    }
+    s.area(x, y, w / 2 - 44, 19, { onClick: () => go({ kind: 'squad', teamId: f.home, mode: 'positions', back: v }) });
+    s.area(mid + 44, y, w / 2 - 44 - (res ? (wide ? 120 : 60) : 0), 19, { onClick: () => go({ kind: 'squad', teamId: f.away, mode: 'positions', back: v }) });
   });
   if (!ties.length) s.text(round.drawn ? 'No ties.' : `The draw is on ${dayMonth(round.draw)}.`, W / 2, 230, { font: 'MY4', colour: C.text, align: 'center' });
   if (cup.winner) s.text(`Winners: ${g.teams[cup.winner].name}`, W / 2, 392, { font: 'MY3', colour: C.yellow, align: 'center' });
@@ -669,12 +678,21 @@ export function drawDayResults(s: Screen, v: Extract<View, { kind: 'dayResults' 
     s.text(fit(g.teams[f.home].name, 240, 'MY2'), 290, y, { font: 'MY2', colour: hl(f.home), align: 'right' });
     s.text(fit(scoreLine(g, f), 100, 'MY2'), W / 2, y, { font: 'MY2', colour: C.cyan, align: 'center' });
     s.text(fit(g.teams[f.away].name, 240, 'MY2'), 350, y, { font: 'MY2', colour: hl(f.away) });
+    // The score opens the match info screens; a club's name opens its squad.
+    s.area(50, y, 240, 17, { onClick: () => go({ kind: 'squad', teamId: f.home, mode: 'positions', back: v }) });
+    s.area(290, y, 60, 17, { onClick: () => openReport(f, v) });
+    s.area(350, y, 240, 17, { onClick: () => go({ kind: 'squad', teamId: f.away, mode: 'positions', back: v }) });
     y += 17;
   }
   if (!list.length) s.text('No other matches today.', W / 2, 220, { font: 'MY4', colour: C.text, align: 'center' });
   pager(s, v.page, pages, p => { v.page = p; });
+  s.text('Click a score for the match info, or a club for its squad.', W / 2, 396, { font: 'MY1', colour: C.text, align: 'center' });
   s.button('View\nTables', 165, 414, 310, 30, () => go({ kind: 'table', back: v }));
   s.doneBar('Done', () => go({ kind: 'menu' }));
+}
+
+function openReport(f: Fixture, back: View) {
+  go({ kind: 'report', fixtureId: f.id, tab: 'ratings', back });
 }
 
 export function drawOver(s: Screen) {

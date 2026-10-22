@@ -3,7 +3,7 @@
 // 640x480 canvas; state.ts holds the screen on show and the game.
 
 import {
-  drawConfirm, drawInfo, drawMatch, drawMatchday, drawProfile, drawResult, drawSquad, drawTacticsView, matchKey,
+  drawConfirm, drawInfo, drawMatch, drawMatchday, drawProfile, drawReport, drawResult, drawSquad, drawTacticsView, matchKey,
 } from './matchday';
 import {
   drawBid, drawCompetitions, drawCup, drawDayResults, drawFinances, drawFixtures, drawMenu, drawNews, drawNewsList,
@@ -55,6 +55,7 @@ screen.draw = s => {
     case 'match': return drawMatch(s);
     case 'info': return drawInfo(s, v.tab);
     case 'result': return drawResult(s);
+    case 'report': return drawReport(s, v);
     case 'dayResults': return drawDayResults(s, v);
     case 'over': return drawOver(s);
   }
